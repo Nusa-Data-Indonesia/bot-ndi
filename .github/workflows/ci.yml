@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: bot_ndi_test
+          MYSQL_USER: bot_ndi_test
+          MYSQL_PASSWORD: test-password-only
+          MYSQL_ROOT_PASSWORD: root-test-password-only
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot-test-password-only --silent"
+          --health-interval=5s
+          --health-timeout=4s
+          --health-retries=20
+          --health-start-period=30s
+    env:
+      NODE_ENV: test
+      ALLOW_DESTRUCTIVE_DB_TESTS: "true"
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: bot_ndi_test
+      DB_PASSWORD: test-password-only
+      DB_NAME: bot_ndi_test
+      DB_ROOT_PASSWORD: root-test-password-only
+      PORT: 3000
+      BASE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Dependency security audit
+        run: npm audit --audit-level=high
+      - name: Lint
+        run: npm run lint
+      - name: Full JavaScript typecheck
+        run: npm run typecheck
+      - name: JavaScript syntax checks
+        run: npm run check
+      - name: Unit and integration tests
+        run: npm test
+      - name: Database integration tests
+        run: npm run test:integration
+      - name: Prepare isolated migration test schemas
+        run: |
+          docker exec '${{ job.services.mysql.id }}' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE DATABASE bot_ndi_test_018; CREATE DATABASE bot_ndi_test_upgrade; CREATE DATABASE bot_ndi_test_publication_upgrade;"'
+      - name: Verify migration 018 recovery
+        env:
+          DB_NAME: bot_ndi_test_018
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/migration-018.mysql.integration.test.js
+      - name: Verify Learning schema upgrade
+        env:
+          DB_NAME: bot_ndi_test_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/learning-upgrade.mysql.integration.test.js
+      - name: Verify publication resolution migration 020
+        env:
+          DB_NAME: bot_ndi_test_publication_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/publication-resolution-upgrade.mysql.integration.test.js
+      - name: Verify publication fence concurrency
+        env:
+          DB_NAME: bot_ndi_test_publication_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/publication-fence.mysql.integration.test.js
+      - name: Verify publication resolution legacy closure
+        env:
+          DB_NAME: bot_ndi_test_publication_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/publication-resolution-legacy.mysql.integration.test.js
+      - name: Validate deployment script syntax
+        run: bash -n scripts/deploy-homelab.sh
+      - name: Validate local Docker image build
+        run: docker build --target runtime --tag bot-ndi:ci .

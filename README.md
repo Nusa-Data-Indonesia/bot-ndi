@@ -1,0 +1,54 @@
+# Bot NDI
+
+Bot NDI adalah aplikasi Node.js untuk dashboard, pengelolaan integrasi, dan otomasi konten Threads. Database MySQL menyimpan akun administrator, konfigurasi, jadwal, dan riwayat. Migrasi dijalankan oleh aplikasi sebelum server mulai.
+
+## Jalankan lokal
+
+Runtime aplikasi mendukung Node.js 20.6 atau lebih baru. Gunakan Node.js 22.13 atau lebih baru untuk pengembangan penuh dan lint ESLint 10. Salin `.env.example` menjadi `.env`, isi kredensial MySQL khusus lokal, dan gunakan `HOST_IP=127.0.0.1` serta `BASE_URL=http://localhost:3000`.
+
+```sh
+test ! -e .env || { echo '.env sudah ada; pertahankan dan periksa secara lokal sebelum melanjutkan.' >&2; exit 1; }
+cp .env.example .env
+npm ci
+docker compose up --build -d --wait
+curl -fsS http://localhost:3000/health/ready
+```
+
+Buat administrator pertama secara interaktif setelah aplikasi siap:
+
+```sh
+docker compose exec -it app npm run admin:create
+```
+
+Perintah meminta email dan password; input password disembunyikan. Tidak ada akun atau kredensial administrator bawaan.
+
+## CI dan deployment
+
+Pull request menuju `main` dan push ke `main` menjalankan CI pada GitHub-hosted runner. CI menjalankan ESLint, pemeriksaan tipe JavaScript seluruh `src/**/*.js` memakai TypeScript `allowJs`/`checkJs`, pemeriksaan sintaks, tes, tes database yang terisolasi, dan validasi build.
+
+Deployment memakai workflow terpisah dan hanya `workflow_dispatch` dari `main`. Runner khusus repository `Nusa-Data-Indonesia/bot-ndi` membangun image lokal dengan tag `<commit-SHA>-<run-id>-<attempt>` pada Docker Engine di LXC; image aplikasi tidak dipublikasikan ke registry. Metadata tetap mencatat SHA commit penuh. Deployment pertama memerlukan LXC, runner, file environment lokal, dan proteksi GitHub Environment yang disiapkan operator.
+
+Lihat [Panduan Deployment](docs/DEPLOYMENT.md) untuk persiapan LXC, runner, database baru, routing ingress, update, rollback, serta backup dan pemulihan. Periksa [Docker](docs/DOCKER.md) untuk Compose dan pengembangan lokal, dan [Operasional](docs/OPERATIONS.md) untuk pemeriksaan layanan sehari-hari.
+
+Konfigurasi produksi dan akses publik belum diverifikasi pada infrastruktur sebenarnya. Jangan menganggap runner telah terdaftar, alamat IP telah diketahui, gateway telah dikonfigurasi, atau domain telah diuji.
+
+## Pengembangan dan tes
+
+```sh
+npm ci
+npm run lint
+npm run typecheck
+npm run check
+npm test
+```
+
+Tes integrasi MySQL memakai server disposable dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true` dan alamat loopback. Jangan jalankan tes destruktif terhadap database produksi atau volume Compose persisten. Tes provider menggunakan mock; setup dan tes tidak boleh mengirim notifikasi Telegram atau mempublikasikan post Threads.
+
+Perintah aplikasi lain:
+
+- `npm start` menjalankan server dashboard.
+- `npm run migrate` menerapkan migrasi MySQL yang belum dijalankan.
+- `npm run admin:create` membuat administrator pertama secara interaktif.
+- `npm run dispatch` memproses satu slot yang sudah jatuh tempo; gunakan hanya setelah meninjau konfigurasi dan target.
+
+Scheduler, Threads publishing, Telegram, dan integrasi AI tetap nonaktif sampai kredensial baru dan akun NDI diverifikasi serta aktivasi dilakukan secara terpisah.

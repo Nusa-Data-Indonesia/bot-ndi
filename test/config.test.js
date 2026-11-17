@@ -1,0 +1,138 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { loadEnv } = require("../src/config");
+
+const database = { DB_HOST: "localhost", DB_USER: "test", DB_PASSWORD: "test-only", DB_NAME: "bot_ndi_test" };
+
+test('optional generator sampling is bounded and unset by default', () => {
+  assert.deepEqual(loadEnv(database).openRouter.generatorSampling, {});
+  assert.deepEqual(loadEnv({ ...database, OPENROUTER_GENERATOR_TEMPERATURE: '0.8', OPENROUTER_GENERATOR_TOP_P: '0.95' }).openRouter.generatorSampling, { temperature: 0.8, topP: 0.95 });
+  for (const input of [{ OPENROUTER_GENERATOR_TEMPERATURE: '2.1' }, { OPENROUTER_GENERATOR_TEMPERATURE: 'NaN' }, { OPENROUTER_GENERATOR_TOP_P: '-0.1' }, { OPENROUTER_GENERATOR_TOP_P: '1.1' }]) {
+    assert.throws(() => loadEnv({ ...database, ...input }), /Invalid configuration/);
+  }
+});
+
+test("database-backed runtime starts paused without provider credentials", () => {
+  const config = loadEnv(database);
+  assert.equal(config.automationEnabled, false);
+  assert.equal(config.timezone, "Asia/Jakarta");
+  assert.equal(config.schedulerEnabled, false);
+  assert.equal(config.schedulerIntervalSeconds, 60);
+  assert.equal(config.trustProxy, false);
+  assert.equal(config.tebar.apiKey, undefined);
+  assert.equal(config.tebar.profileId, undefined);
+  assert.equal(config.tebar.accountId, undefined);
+  assert.equal(config.tebar.webhookSecret, undefined);
+  assert.equal(config.openRouter.apiKey, undefined);
+  assert.equal(config.telegram.botToken, undefined);
+  assert.equal(config.telegram.chatId, undefined);
+  assert.equal(config.db.database, "bot_ndi_test");
+});
+
+test("approved CTA hosts are empty until explicitly configured and reject invalid hostnames", () => {
+  assert.deepEqual(loadEnv(database).approvedCtaHosts, []);
+  assert.deepEqual(loadEnv({ ...database, APPROVED_CTA_HOSTS: "EXAMPLE.ID, shop.example.id,example.id" }).approvedCtaHosts, [
+    "example.id", "shop.example.id",
+  ]);
+  for (const value of ["http://example.id", "example.id/path", "example.id:443", "example.id,,shop.id", "secret-host-value!"]) {
+    assert.throws(() => loadEnv({ ...database, APPROVED_CTA_HOSTS: value }), (error) => {
+      assert.match(error.message, /APPROVED_CTA_HOSTS/);
+      assert.doesNotMatch(error.message, /secret-host-value/);
+      return true;
+    });
+  }
+});
+
+test("missing database settings are reported without leaking supplied values", () => {
+  assert.throws(() => loadEnv({ DB_HOST: "private-host-value" }), (error) => {
+    assert.match(error.message, /DB_USER/);
+    assert.match(error.message, /DB_PASSWORD/);
+    assert.match(error.message, /DB_NAME/);
+    assert.doesNotMatch(error.message, /private-host-value/);
+    return true;
+  });
+});
+
+test("pure tools can explicitly opt out of database requirements", () => {
+  const config = loadEnv({}, { requireDatabase: false });
+  assert.equal(config.db, null);
+  assert.equal(config.automationEnabled, false);
+});
+
+test("invalid timezone fails without echoing input", () => {
+  assert.throws(() => loadEnv({ ...database, TIMEZONE: "secret-timezone" }), (error) => {
+    assert.match(error.message, /TIMEZONE/);
+    assert.doesNotMatch(error.message, /secret-timezone/);
+    return true;
+  });
+});
+
+test("production requires an explicit HTTPS origin", () => {
+  for (const baseUrl of [undefined, "http://example.com", "https://user:secret@example.com", "https://example.com/path"]) {
+    assert.throws(() => loadEnv({ ...database, NODE_ENV: "production", BASE_URL: baseUrl }), /BASE_URL/);
+  }
+  assert.equal(loadEnv({ ...database, NODE_ENV: "production", BASE_URL: "https://example.com" }).baseUrl, "https://example.com");
+});
+
+test("environment cannot enable automation at startup", () => {
+  assert.equal(loadEnv({ ...database, AUTOMATION_ENABLED: "true" }).automationEnabled, false);
+});
+
+test("scheduler requires an explicit boolean and enforces a bounded polling interval", () => {
+  assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "true" }).schedulerEnabled, true);
+  assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "false", SCHEDULER_INTERVAL_SECONDS: "30" }).schedulerIntervalSeconds, 30);
+  for (const extra of [{ SCHEDULER_ENABLED: "yes" }, { SCHEDULER_INTERVAL_SECONDS: "14" }, { SCHEDULER_INTERVAL_SECONDS: "3601" }]) {
+    assert.throws(() => loadEnv({ ...database, ...extra }), /Invalid configuration/);
+  }
+});
+
+test("proxy trust can be restricted to a trusted ingress address", () => {
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "true" }).trustProxy, true);
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "192.168.0.80" }).trustProxy, "192.168.0.80");
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "192.168.0.80, 192.168.0.81" }).trustProxy, "192.168.0.80,192.168.0.81");
+  for (const value of ["yes", "192.168.0.80/33", "192.168.0.80,not-an-address", "2001:db8::1/129"]) {
+    assert.throws(() => loadEnv({ ...database, TRUST_PROXY: value }), /TRUST_PROXY/);
+  }
+});
+
+test("ports and connection pool limits must be bounded integers", () => {
+  for (const extra of [{ PORT: "abc" }, { DB_PORT: "65536" }, { DB_POOL_SIZE: "0" }, { DB_POOL_SIZE: "101" }]) {
+    assert.throws(() => loadEnv({ ...database, ...extra }), /Invalid configuration/);
+  }
+});
+
+test("Node versions older than 20.6 are refused", () => {
+  for (const nodeVersion of ["18.20.0", "20.5.9"]) {
+    assert.throws(() => loadEnv(database, { nodeVersion }), /20\.6/);
+  }
+  assert.equal(loadEnv(database, { nodeVersion: "20.6.0" }).timezone, "Asia/Jakarta");
+});
+
+test('learning retention is disabled by default and requires an explicit bounded policy', () => {
+  const { loadEnv } = require('../src/config');
+  const options = {requireDatabase:false};
+  const base = {NODE_ENV:'test'};
+  assert.equal(loadEnv(base, options).learningRetentionEnabled,false);
+  assert.throws(() => loadEnv({...base,LEARNING_RETENTION_ENABLED:'true'},options),/LEARNING_RETENTION_DAYS/);
+  assert.throws(() => loadEnv({...base,LEARNING_RETENTION_ENABLED:'true',LEARNING_RETENTION_DAYS:'0'},options),/LEARNING_RETENTION_DAYS/);
+  assert.equal(loadEnv({...base,LEARNING_RETENTION_ENABLED:'true',LEARNING_RETENTION_DAYS:'30'},options).learningRetentionDays,30);
+});
+
+test('learning execution and shadow feature controls default off and validate independently', () => {
+  const options = {requireDatabase:false};
+  const base = {NODE_ENV:'test'};
+  const defaults = loadEnv(base, options);
+  assert.equal(defaults.learningActivationEnabled, false);
+  assert.equal(defaults.learningRetrievalEnabled, false);
+  assert.equal(defaults.learningPromptIntegrationEnabled, false);
+  assert.equal(defaults.learningShadowEnabled, false);
+  assert.deepEqual(loadEnv({...base,LEARNING_ACTIVATION_ENABLED:'true'},options), {
+    ...defaults, learningActivationEnabled:true,
+  });
+  assert.equal(loadEnv({...base,LEARNING_RETRIEVAL_ENABLED:'true'},options).learningRetrievalEnabled, true);
+  assert.equal(loadEnv({...base,LEARNING_PROMPT_INTEGRATION_ENABLED:'true'},options).learningPromptIntegrationEnabled, true);
+  assert.equal(loadEnv({...base,LEARNING_SHADOW_ENABLED:'true'},options).learningShadowEnabled, true);
+  for (const key of ['LEARNING_ACTIVATION_ENABLED','LEARNING_RETRIEVAL_ENABLED','LEARNING_PROMPT_INTEGRATION_ENABLED','LEARNING_SHADOW_ENABLED']) {
+    assert.throws(() => loadEnv({...base,[key]:'yes'},options), new RegExp(key));
+  }
+});

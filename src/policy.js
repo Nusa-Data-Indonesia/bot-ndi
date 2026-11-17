@@ -1,0 +1,410 @@
+const { DateTime, IANAZone } = require('luxon');
+
+const MAX_HASHTAGS = 30;
+const MAX_HASHTAG_LENGTH = 100;
+const MAX_APPROVED_ATTRIBUTE_COUNT = 20;
+const MAX_APPROVED_ATTRIBUTE_LENGTH = 100;
+const HASHTAG_PATTERN = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
+const NUMBER_WORDS = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|kosong|sifar|satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh|sebelas|belas|puluh|ratus|seratus|seribu|ribu|sejuta|juta|miliar|setengah|separuh|suku)';
+const QUANTITY_UNITS = '(?:diamond|diamonds|crystal|crystals|coin|coins|point|points|akun|accounts?|skin|skins|item|items|unit|units|buah|kali|rupiah|rp|idr|dollar|dollars|percent|persen|level|rank)';
+const SPELLED_QUANTITY_PATTERN = new RegExp(`\\b${NUMBER_WORDS}(?:\\s+${NUMBER_WORDS})*\\s+${QUANTITY_UNITS}\\b`, 'i');
+const SPELLED_CURRENCY_PATTERN = new RegExp(`\\b(?:rp|idr|rupiah|dollar|dollars)\\s+${NUMBER_WORDS}(?:\\s+${NUMBER_WORDS})*\\b`, 'i');
+
+/** @typedef {'OFF'|'ON'|'MIXED'} PriceMode */
+/** @typedef {Record<string, unknown>} UnknownRecord */
+
+/** @param {unknown} value @returns {value is UnknownRecord} */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** @param {unknown} value @returns {value is string[]} */
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function hashtagKey(value) {
+  return value.normalize('NFKC').replace(/^#+/u, '').replace(/\s+/gu, '').toLowerCase();
+}
+
+function normalizeHashtags(input) {
+  if (!Array.isArray(input) || input.length > MAX_HASHTAGS) return null;
+  const normalized = [];
+  const seen = new Set();
+  for (const value of input) {
+    if (typeof value !== 'string' || [...value].length > MAX_HASHTAG_LENGTH) return null;
+    const trimmed = value.normalize('NFKC').trim();
+    if (!trimmed) continue;
+    const body = trimmed.replace(/^#+/u, '').replace(/\s+/gu, '');
+    if (!body || [...body].length > MAX_HASHTAG_LENGTH || !/^[\p{L}\p{N}_]+$/u.test(body)) return null;
+    const key = hashtagKey(body);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(`#${body}`);
+  }
+  return normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @param {{allowedCtaHosts?: string[]}} [options]
+ */
+function isApprovedCtaUrl(value, { allowedCtaHosts = [] } = {}) {
+  if (typeof value !== 'string' || value.length > 300 || value !== value.trim()) return false;
+  const validHosts = allowedCtaHosts
+    .filter((host) => typeof host === 'string' && host.length <= 253
+      && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/iu.test(host))
+    .map((host) => host.toLowerCase().replace(/\.$/u, ''));
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/\.$/u, '');
+    const approvedHost = validHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && approvedHost;
+  } catch {
+    return false;
+  }
+}
+
+function splitAroundText(text, excludedText) {
+  const index = excludedText ? text.lastIndexOf(excludedText) : -1;
+  if (index < 0) return { before: text, excluded: '', after: '', separated: false };
+  return {
+    before: text.slice(0, index),
+    excluded: excludedText,
+    after: text.slice(index + excludedText.length),
+    separated: true,
+  };
+}
+
+function joinAroundText(parts) {
+  return parts.separated ? `${parts.before}${parts.excluded}${parts.after}` : parts.before;
+}
+
+function canonicalizeHashtags(text) {
+  return text.replace(HASHTAG_PATTERN, (_match, body) => `#${body.normalize('NFKC')}`);
+}
+
+function appendHashtags(text, hashtags, excludedText = '') {
+  const normalized = normalizeHashtags(hashtags);
+  if (!normalized || !normalized.length) return text;
+  const parts = splitAroundText(text, excludedText);
+  parts.before = canonicalizeHashtags(parts.before);
+  parts.after = canonicalizeHashtags(parts.after);
+  const normalizedText = joinAroundText(parts);
+  const presentMatches = [...parts.before.matchAll(HASHTAG_PATTERN), ...parts.after.matchAll(HASHTAG_PATTERN)];
+  const present = new Set(presentMatches.map((match) => hashtagKey(match[1])));
+  const missing = normalized.filter((tag) => !present.has(hashtagKey(tag)));
+  return missing.length ? `${normalizedText}\n${missing.join(' ')}` : normalizedText;
+}
+
+function instant(value) {
+  if (DateTime.isDateTime(value)) return value;
+  if (value instanceof Date) return DateTime.fromJSDate(value, { zone: 'utc' });
+  return typeof value === 'string' ? DateTime.fromISO(value, { zone: 'utc' }) : DateTime.invalid('Invalid instant');
+}
+
+function intervalFitsDateTime(intervalMinutes) {
+  if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1) return false;
+  const target = DateTime.utc().plus({ minutes: intervalMinutes });
+  return target.isValid && Number.isFinite(target.toMillis());
+}
+
+/** @param {UnknownRecord} [schedule] */
+function intervalMinutesFromSchedule(schedule = {}) {
+  const intervalMinutes = schedule.intervalMinutes;
+  if (typeof intervalMinutes === 'number' && Number.isSafeInteger(intervalMinutes) && intervalFitsDateTime(intervalMinutes)) return intervalMinutes;
+  const legacyHours = schedule.intervalHours;
+  const requestedHours = typeof legacyHours === 'string' && legacyHours.trim() ? Number(legacyHours) : legacyHours;
+  if (typeof requestedHours === 'number' && Number.isSafeInteger(requestedHours) && requestedHours >= 1) {
+    const minutes = requestedHours * 60;
+    if (intervalFitsDateTime(minutes)) return minutes;
+  }
+  const hours = schedule.hours;
+  const minutesPart = schedule.minutes;
+  if (typeof hours === 'number' && Number.isSafeInteger(hours) && hours >= 0
+    && typeof minutesPart === 'number' && Number.isSafeInteger(minutesPart) && minutesPart >= 0 && minutesPart <= 59) {
+    const minutes = hours * 60 + minutesPart;
+    if (intervalFitsDateTime(minutes)) return minutes;
+  }
+  return 60;
+}
+
+/** @param {UnknownRecord} [schedule] @returns {UnknownRecord & {intervalMinutes: number}} */
+function normalizeScheduleInterval(schedule = {}) {
+  const normalized = /** @type {UnknownRecord & {intervalMinutes: number}} */ ({
+    ...schedule,
+    intervalMinutes: intervalMinutesFromSchedule(schedule),
+    timezone: schedule.timezone === undefined ? 'Asia/Jakarta' : schedule.timezone,
+  });
+  delete normalized.intervalHours;
+  delete normalized.hours;
+  delete normalized.minutes;
+  return normalized;
+}
+
+/** @param {unknown} [input] @param {{allowedCtaHosts?: string[]}} [options] */
+function validateSettings(input = {}, { allowedCtaHosts = [] } = {}) {
+  /** @type {Record<string, string>} */
+  const errors = {};
+  if (!isRecord(input)) return { valid: false, errors: { settings: 'Use a settings object.' } };
+  for (const field of ['schedule', 'brand', 'guardrails', 'trackedLinks']) {
+    if (input[field] !== undefined && !isRecord(input[field])) errors[field] = 'Use a structured object.';
+  }
+  if (Object.keys(errors).length) return { valid: false, errors };
+  const source = isRecord(input.schedule) ? input.schedule : {};
+  const hasHours = Object.hasOwn(source, 'hours');
+  const hasMinutes = Object.hasOwn(source, 'minutes');
+  const hasLegacyHours = Object.hasOwn(source, 'intervalHours');
+  const hasCanonicalMinutes = Object.hasOwn(source, 'intervalMinutes');
+  let requestedIntervalMinutes = 60;
+  if ([hasHours || hasMinutes, hasLegacyHours, hasCanonicalMinutes].filter(Boolean).length > 1) {
+    errors['schedule.intervalMinutes'] = 'Gunakan satu format interval saja.';
+  } else if (hasHours || hasMinutes) {
+    if (!hasHours || !hasMinutes || typeof source.hours !== 'number' || !Number.isSafeInteger(source.hours) || source.hours < 0) {
+      errors['schedule.hours'] = 'Masukkan jumlah jam berupa bilangan bulat non-negatif.';
+    }
+    if (!hasHours || !hasMinutes || typeof source.minutes !== 'number' || !Number.isSafeInteger(source.minutes) || source.minutes < 0 || source.minutes > 59) {
+      errors['schedule.minutes'] = 'Masukkan menit berupa bilangan bulat antara 0 dan 59.';
+    }
+    if (!errors['schedule.hours'] && !errors['schedule.minutes']
+      && typeof source.hours === 'number' && typeof source.minutes === 'number') {
+      requestedIntervalMinutes = source.hours * 60 + source.minutes;
+    }
+  } else if (hasCanonicalMinutes) {
+    if (typeof source.intervalMinutes !== 'number' || !Number.isSafeInteger(source.intervalMinutes)) errors['schedule.intervalMinutes'] = 'Masukkan interval dalam bilangan bulat.';
+    else requestedIntervalMinutes = source.intervalMinutes;
+  } else if (hasLegacyHours) {
+    const legacyHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
+      ? Number(source.intervalHours) : source.intervalHours;
+    if (typeof legacyHours !== 'number' || !Number.isSafeInteger(legacyHours) || legacyHours < 1) errors['schedule.intervalHours'] = 'Interval lama harus berupa jumlah jam bulat minimal 1.';
+    else requestedIntervalMinutes = legacyHours * 60;
+  }
+  const schedule = {
+    intervalMinutes: requestedIntervalMinutes,
+    timezone: source.timezone === undefined ? 'Asia/Jakarta' : source.timezone,
+    activeDays: [1, 2, 3, 4, 5, 6, 7],
+    activeStart: '00:00',
+    activeEnd: '00:00',
+  };
+  if (!Number.isSafeInteger(requestedIntervalMinutes) || requestedIntervalMinutes < 1 || !intervalFitsDateTime(requestedIntervalMinutes)) {
+    errors['schedule.intervalMinutes'] = 'Jarak antar posting minimal 1 menit dan harus dapat dijadwalkan.';
+  }
+  if (typeof schedule.timezone !== 'string' || !IANAZone.isValidZone(schedule.timezone)) errors['schedule.timezone'] = 'Use a valid IANA timezone.';
+  const rawPriceMode = input.priceMode;
+  /** @type {PriceMode} */
+  const priceMode = rawPriceMode === 'ON' || rawPriceMode === 'MIXED' ? rawPriceMode : 'OFF';
+  if (rawPriceMode !== undefined && rawPriceMode !== 'OFF' && rawPriceMode !== 'ON' && rawPriceMode !== 'MIXED') errors.priceMode = 'Use OFF, ON, or MIXED.';
+  const rawGameWhitelist = input.gameWhitelist === undefined ? [] : input.gameWhitelist;
+  const gameWhitelistValid = isStringArray(rawGameWhitelist)
+    && rawGameWhitelist.every((game) => Boolean(game.trim()) && game.length <= 100);
+  if (!gameWhitelistValid) errors.gameWhitelist = 'Use a list of game names.';
+  const gameWhitelist = gameWhitelistValid && isStringArray(rawGameWhitelist) ? rawGameWhitelist : [];
+  const hashtags = normalizeHashtags(input.hashtags === undefined ? [] : input.hashtags);
+  if (!hashtags) errors.hashtags = 'Use up to 30 hashtags with letters, numbers, or underscores.';
+  const trackedLinks = isRecord(input.trackedLinks) ? input.trackedLinks : {};
+  for (const pillar of ['topup', 'account']) {
+    const link = trackedLinks[pillar];
+    if (link === undefined || link === '') continue;
+    if (!isApprovedCtaUrl(link, { allowedCtaHosts })) {
+      errors[`trackedLinks.${pillar}`] = allowedCtaHosts.length
+        ? 'Use an HTTPS link on an approved CTA hostname or its subdomains.'
+        : 'Configure an approved HTTPS CTA hostname before adding a link.';
+    }
+  }
+  /** @type {{name: string, voice: string, audienceNotes: string, contentDirection: string}} */
+  const brand = { name: '', voice: '', audienceNotes: '', contentDirection: '' };
+  const brandTextLimits = { name: 2000, voice: 2000, audienceNotes: 7000, contentDirection: 7000 };
+  const brandInput = isRecord(input.brand) ? input.brand : {};
+  for (const field of /** @type {const} */ (['name', 'voice', 'audienceNotes', 'contentDirection'])) {
+    const value = brandInput[field];
+    const maxLength = brandTextLimits[field];
+    if (value !== undefined && (typeof value !== 'string' || value.length > maxLength)) {
+      errors[`brand.${field}`] = `Use text up to ${maxLength} characters.`;
+    } else {
+      brand[field] = typeof value === 'string' ? value.trim() : '';
+    }
+  }
+  const guardrailsInput = isRecord(input.guardrails) ? input.guardrails : {};
+  /** @type {{approved: boolean, hookVocabulary: string[], forbiddenClaims: string[], approvedClaims: string[]}} */
+  const guardrails = { approved: guardrailsInput.approved === true, hookVocabulary: [], forbiddenClaims: [], approvedClaims: [] };
+  if (guardrailsInput.approved !== undefined && typeof guardrailsInput.approved !== 'boolean') errors['guardrails.approved'] = 'Use true or false.';
+  for (const field of /** @type {const} */ (['forbiddenClaims', 'approvedClaims'])) {
+    const values = guardrailsInput[field] ?? [];
+    if (!isStringArray(values) || values.length > 100 || values.some((value) => !value.trim() || value.length > 500)) errors[`guardrails.${field}`] = 'Use a list of claim phrases.';
+    else guardrails[field] = [...new Set(values.map((value) => value.trim()))];
+  }
+  const hookVocabulary = guardrailsInput.hookVocabulary ?? [];
+  if (!isStringArray(hookVocabulary) || hookVocabulary.length > 300
+    || hookVocabulary.some((value) => !value.trim() || value.length > 500)) {
+    errors['guardrails.hookVocabulary'] = 'Use up to 300 suggested words or phrases, with up to 500 characters each.';
+  } else {
+    const seenVocabulary = new Set();
+    guardrails.hookVocabulary = hookVocabulary.map((value) => value.normalize('NFKC').trim()).filter((value) => {
+      const key = value.toLocaleLowerCase('ms');
+      if (seenVocabulary.has(key)) return false;
+      seenVocabulary.add(key);
+      return true;
+    });
+  }
+  if (Object.keys(errors).length) return { valid: false, errors };
+  return { valid: true, errors: {}, settings: {
+    schedule, priceMode, gameWhitelist: [...new Set(gameWhitelist.map((game) => game.trim()))], hashtags,
+    brand, guardrails, trackedLinks: {
+      topup: typeof trackedLinks.topup === 'string' ? trackedLinks.topup : '',
+      account: typeof trackedLinks.account === 'string' ? trackedLinks.account : '',
+    },
+  } };
+}
+
+function isInActiveWindow(value, schedule) {
+  const checked = validateSettings({ schedule });
+  if (!checked.valid) return false;
+  return instant(value).isValid;
+}
+
+function isFactFresh(fact, now = new Date()) {
+  if (!fact || fact.active !== true) return false;
+  const updated = instant(fact.updatedAt);
+  const current = instant(now);
+  const age = current.toMillis() - updated.toMillis();
+  return updated.isValid && current.isValid && age >= 0 && age <= 24 * 60 * 60 * 1000;
+}
+
+function composeApprovedContent(context) {
+  const pillar = context.pillar;
+  if (!['topup', 'account'].includes(pillar)) return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
+  if (context.includeProduct === false) return { valid: true, text: '', factBearing: false, factIds: [] };
+  const facts = (context.facts || []).filter((fact) => isFactFresh(fact, context.now) && fact.pillar === pillar);
+  const fact = facts[0];
+  const game = fact?.game || (pillar === 'account' ? 'Mobile Legends' : context.gameWhitelist?.[0]);
+  const allowed = pillar === 'account' ? game === 'Mobile Legends' : context.gameWhitelist?.includes(game);
+  const safeField = isSafeApprovedField;
+  if (!allowed || !safeField(game)) {
+    if (context.allowGeneric === true) return { valid: true, text: '', factBearing: false, factIds: [] };
+    return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
+  }
+  const details = [];
+  if (fact) {
+    for (const field of ['denomination', 'availability']) {
+      if (fact[field] !== undefined && fact[field] !== null && fact[field] !== '' && !safeField(fact[field])) return { valid: false, errors: ['INVALID_APPROVED_FACT'] };
+    }
+    if (fact.denomination) details.push(fact.denomination);
+    if (fact.price !== undefined && fact.price !== null && fact.price !== '') {
+      const raw = String(fact.price);
+      if (!/^\d+(?:\.\d{1,2})?$/.test(raw) || !Number.isFinite(Number(raw)) || Number(raw) < 0) return { valid: false, errors: ['INVALID_APPROVED_PRICE'] };
+      details.push(`IDR ${raw}`);
+    }
+    if (fact.availability) details.push(fact.availability);
+    const safeAttributes = Array.isArray(fact.attributes)
+      ? fact.attributes.slice(0, MAX_APPROVED_ATTRIBUTE_COUNT).filter(isSafeApprovedAttribute) : [];
+    details.push(...safeAttributes);
+  }
+  const factBearing = details.length > 0;
+  return {
+    valid: true,
+    text: `${pillar === 'topup' ? 'Top-up' : 'Akun'} ${game}${factBearing ? ': ' + details.join('; ') : ''}.`,
+    factBearing, factIds: factBearing && fact.id !== undefined ? [fact.id] : [],
+  };
+}
+
+function isSafeApprovedField(value) {
+  return typeof value === 'string' && value.trim() && value.length <= 200
+    && /^[\p{L}\p{N} ,.'()+/-]+$/u.test(value) && !/[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(value);
+}
+
+function isSafeApprovedAttribute(value) {
+  return typeof value === 'string' && value.length <= MAX_APPROVED_ATTRIBUTE_LENGTH && isSafeApprovedField(value);
+}
+
+function postTimestamp(post) {
+  for (const value of [post?.completedAt, post?.scheduledAt, post?.createdAt]) {
+    const timestamp = Date.parse(value || '');
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return NaN;
+}
+
+function extractRecentHooks(history = []) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((post, index) => ({
+      post,
+      index,
+      timestamp: postTimestamp(post),
+    }))
+    .filter(({ post }) => post?.status === 'published' && typeof post.caption === 'string')
+    .sort((left, right) => {
+      const leftTime = Number.isFinite(left.timestamp) ? left.timestamp : -Infinity;
+      const rightTime = Number.isFinite(right.timestamp) ? right.timestamp : -Infinity;
+      return rightTime - leftTime || left.index - right.index;
+    })
+    .map(({ post }) => {
+      const lines = post.caption.split(/\r?\n/u);
+      const productIndex = lines.findIndex((line) => /^(?:Top-up|Akun|Akaun)\s/u.test(line));
+      if (productIndex < 0) return '';
+      return lines.slice(0, productIndex).join(' ')
+        .replace(HASHTAG_PATTERN, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim();
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function stronglyOverlapsHook(hook, recentHooks) {
+  const words = hook.normalize('NFKC').toLowerCase().match(/[a-z]+/gu) || [];
+  if (!words.length) return false;
+  const normalizedHook = words.join(' ');
+  return recentHooks.some((recentHook) => {
+    if (typeof recentHook !== 'string') return false;
+    const recentWords = recentHook.normalize('NFKC').toLowerCase().match(/[a-z]+/gu) || [];
+    if (!recentWords.length) return false;
+    if (normalizedHook === recentWords.join(' ')) return true;
+    const uniqueWords = new Set(words);
+    const uniqueRecentWords = new Set(recentWords);
+    if (uniqueWords.size < 6 || uniqueRecentWords.size < 6) return false;
+    const shared = [...uniqueWords].filter((word) => uniqueRecentWords.has(word)).length;
+    return shared / Math.min(uniqueWords.size, uniqueRecentWords.size) >= 0.75;
+  });
+}
+
+function validateCaption(text, context = {}) {
+  const errors = [];
+  if (typeof text !== 'string' || !text.trim()) return { valid: false, errors: ['EMPTY_CAPTION'] };
+  if ([...text].length > 500) errors.push('CAPTION_TOO_LONG');
+  const allowedHashtags = normalizeHashtags(context.hashtags ?? []);
+  if (!allowedHashtags) errors.push('INVALID_HASHTAGS');
+  const allowedKeys = new Set((allowedHashtags || []).map(hashtagKey));
+  const link = typeof context.trackedLink === 'string' ? context.trackedLink : '';
+  const captionParts = splitAroundText(text, link);
+  const hashMatches = [...captionParts.before.normalize('NFKC').matchAll(HASHTAG_PATTERN), ...captionParts.after.normalize('NFKC').matchAll(HASHTAG_PATTERN)];
+  for (const match of hashMatches) {
+    if (!allowedKeys.has(hashtagKey(match[1]))) errors.push('UNAPPROVED_HASHTAG');
+  }
+  const normalized = text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+  for (const claim of context.forbiddenClaims || []) {
+    if (typeof claim === 'string' && claim.trim() && normalized.includes(claim.normalize('NFKC').toLowerCase().trim())) errors.push('FORBIDDEN_CLAIM');
+  }
+  captionParts.before = captionParts.before.replace(HASHTAG_PATTERN, '');
+  captionParts.after = captionParts.after.replace(HASHTAG_PATTERN, '');
+  const withoutHashtags = joinAroundText(captionParts).replace(/\s+$/u, '');
+  let hook = withoutHashtags;
+  if (context.trackedLink || context.optionalContent === true) {
+    const approved = composeApprovedContent(context);
+    if (!approved.valid) return { valid: false, errors: [...errors, ...approved.errors] };
+    const suffixParts = [approved.text, context.trackedLink].filter(Boolean);
+    const suffix = suffixParts.length ? `\n${suffixParts.join('\n')}` : '';
+    if (suffix && !withoutHashtags.endsWith(suffix)) return { valid: false, errors: [...errors, 'UNAPPROVED_FACT_OR_LINK'] };
+    if (suffix) hook = withoutHashtags.slice(0, -suffix.length);
+  }
+  const normalizedHook = hook.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+  if (!normalizedHook.trim()) errors.push('EMPTY_HOOK');
+  if (/[:/@\\]|[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(normalizedHook)) errors.push('UNAPPROVED_LINK');
+  if (/\p{N}|[$€£¥]/u.test(normalizedHook)) errors.push('UNAPPROVED_QUANTITY_OR_CURRENCY');
+  if (SPELLED_QUANTITY_PATTERN.test(normalizedHook) || SPELLED_CURRENCY_PATTERN.test(normalizedHook)) errors.push('UNAPPROVED_QUANTITY_OR_CURRENCY');
+  if (!/^[a-z\s!?,.'’-]+$/.test(normalizedHook)) errors.push('INVALID_HOOK_CHARACTERS');
+  if (Array.isArray(context.recentHooks) && stronglyOverlapsHook(normalizedHook, context.recentHooks)) errors.push('REPETITIVE_HOOK');
+  return { valid: errors.length === 0, errors: [...new Set(errors)] };
+}
+
+module.exports = { validateSettings, intervalMinutesFromSchedule, normalizeScheduleInterval, isApprovedCtaUrl, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };

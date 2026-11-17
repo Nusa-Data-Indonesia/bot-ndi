@@ -1,0 +1,140 @@
+const { isIP } = require("node:net");
+
+function normalizeTrustedProxies(value) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (typeof value !== "string") return false;
+  const addresses = value.split(",").map((address) => address.trim());
+  if (!addresses.length || addresses.some((entry) => {
+    const [address, prefix, ...extra] = entry.split("/");
+    if (extra.length || !address) return true;
+    const version = isIP(address);
+    if (!version) return true;
+    if (prefix === undefined) return false;
+    if (!/^\d+$/.test(prefix)) return true;
+    const length = Number(prefix);
+    return length > (version === 4 ? 32 : 128);
+  })) return false;
+  return addresses.join(",");
+}
+
+/** @param {unknown} value @returns {string[] | null} */
+function normalizeApprovedCtaHosts(value) {
+  if (value === undefined) return [];
+  if (typeof value !== "string") return null;
+  if (value.trim() === "") return [];
+  const hosts = value.split(",").map((host) => host.trim().toLowerCase().replace(/\.$/, ""));
+  const validHostname = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+  if (!hosts.length || hosts.some((host) => !host || host.length > 253 || !validHostname.test(host))) return null;
+  return [...new Set(hosts)];
+}
+
+function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = process.versions.node } = {}) {
+  const [major, minor] = nodeVersion.split(".").map(Number);
+  if (!Number.isInteger(major) || major < 20 || (major === 20 && minor < 6)) {
+    throw new Error("Node.js 20.6 or newer is required");
+  }
+
+  const errors = [];
+  const integer = (key, fallback, min, max) => {
+    const value = env[key] === undefined ? String(fallback) : env[key];
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max) {
+      errors.push(key);
+      return fallback;
+    }
+    return Number(value);
+  };
+  const optionalNumber = (key, max) => {
+    const value = env[key];
+    if (value === undefined || value === '') return undefined;
+    if (typeof value !== 'string' || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(Number(value)) || Number(value) > max) {
+      errors.push(key);
+      return undefined;
+    }
+    return Number(value);
+  };
+  const temperature = optionalNumber('OPENROUTER_GENERATOR_TEMPERATURE', 2);
+  const topP = optionalNumber('OPENROUTER_GENERATOR_TOP_P', 1);
+  const approvedCtaHosts = normalizeApprovedCtaHosts(env.APPROVED_CTA_HOSTS);
+  if (approvedCtaHosts === null) errors.push('APPROVED_CTA_HOSTS');
+  const nodeEnv = env.NODE_ENV || "development";
+  if (!["development", "test", "production"].includes(nodeEnv)) errors.push("NODE_ENV");
+  const port = integer("PORT", 3000, 1, 65535);
+  const trustProxy = env.TRUST_PROXY === undefined ? false : normalizeTrustedProxies(env.TRUST_PROXY);
+  if (env.TRUST_PROXY !== undefined && trustProxy === false && env.TRUST_PROXY !== "false") errors.push("TRUST_PROXY");
+  if (env.SCHEDULER_ENABLED !== undefined && !["true", "false"].includes(env.SCHEDULER_ENABLED)) errors.push("SCHEDULER_ENABLED");
+  const schedulerEnabled = env.SCHEDULER_ENABLED === "true";
+  if (env.LEARNING_CAPTURE_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_CAPTURE_ENABLED)) errors.push("LEARNING_CAPTURE_ENABLED");
+  if (env.LEARNING_RETENTION_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_RETENTION_ENABLED)) errors.push("LEARNING_RETENTION_ENABLED");
+  const learningFlags = {
+    activation: 'LEARNING_ACTIVATION_ENABLED',
+    retrieval: 'LEARNING_RETRIEVAL_ENABLED',
+    promptIntegration: 'LEARNING_PROMPT_INTEGRATION_ENABLED',
+    shadow: 'LEARNING_SHADOW_ENABLED',
+  };
+  for (const key of Object.values(learningFlags)) {
+    if (env[key] !== undefined && !['true', 'false'].includes(env[key])) errors.push(key);
+  }
+  const learningRetentionEnabled = env.LEARNING_RETENTION_ENABLED === 'true';
+  if (learningRetentionEnabled && !env.LEARNING_RETENTION_DAYS) errors.push('LEARNING_RETENTION_DAYS');
+  const learningRetentionDays = !env.LEARNING_RETENTION_DAYS ? null : integer('LEARNING_RETENTION_DAYS', 30, 1, 3650);
+  const schedulerIntervalSeconds = integer("SCHEDULER_INTERVAL_SECONDS", 60, 15, 3600);
+  const timezone = env.TIMEZONE ?? "Asia/Jakarta";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+  } catch {
+    errors.push("TIMEZONE");
+  }
+  const baseUrl = env.BASE_URL || (nodeEnv === "production" ? "" : `http://localhost:${port}`);
+  try {
+    const url = new URL(baseUrl);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/" ||
+      (nodeEnv === "production" && url.protocol !== "https:")) errors.push("BASE_URL");
+  } catch {
+    errors.push("BASE_URL");
+  }
+
+  let db = null;
+  if (requireDatabase || ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"].some((key) => env[key])) {
+    for (const key of ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"]) {
+      if (typeof env[key] !== "string" || !env[key].trim()) errors.push(key);
+    }
+    db = {
+      host: env.DB_HOST,
+      port: integer("DB_PORT", 3306, 1, 65535),
+      user: env.DB_USER,
+      password: env.DB_PASSWORD,
+      database: env.DB_NAME,
+      connectionLimit: integer("DB_POOL_SIZE", 5, 1, 100),
+    };
+  }
+  if (errors.length) throw new Error(`Invalid configuration: ${[...new Set(errors)].join(", ")}`);
+  return {
+    nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone,
+    approvedCtaHosts: approvedCtaHosts || [],
+    schedulerEnabled, schedulerIntervalSeconds, trustProxy, learningCaptureEnabled: env.LEARNING_CAPTURE_ENABLED === "true", learningRetentionEnabled, learningRetentionDays,
+    learningActivationEnabled: env[learningFlags.activation] === 'true',
+    learningRetrievalEnabled: env[learningFlags.retrieval] === 'true',
+    learningPromptIntegrationEnabled: env[learningFlags.promptIntegration] === 'true',
+    learningShadowEnabled: env[learningFlags.shadow] === 'true',
+    automationEnabled: false,
+    db,
+    tebar: {
+      apiKey: env.TEBAR_API_KEY || undefined,
+      profileId: env.TEBAR_PROFILE_ID || undefined,
+      accountId: env.TEBAR_ACCOUNT_ID || undefined,
+      webhookSecret: env.TEBAR_WEBHOOK_SECRET || undefined,
+    },
+    openRouter: {
+      apiKey: env.OPENROUTER_API_KEY || undefined,
+      model: env.OPENROUTER_MODEL || "google/gemini-3.8-flash",
+      generatorSampling: { ...(temperature === undefined ? {} : { temperature }), ...(topP === undefined ? {} : { topP }) },
+    },
+    telegram: {
+      botToken: env.TELEGRAM_BOT_TOKEN || undefined,
+      chatId: env.TELEGRAM_CHAT_ID || undefined,
+    },
+  };
+}
+
+module.exports = { loadEnv, normalizeApprovedCtaHosts };

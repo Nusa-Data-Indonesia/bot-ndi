@@ -1,0 +1,22 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.DS_Store
+.omc/
+.superpowers/
+docs/superpowers/
+coverage/
+npm-debug.log*
+
+# Keep legacy BotMerzz and private homelab evidence out of the Bot NDI repository.
+docs/HOMELAB-SSOT.md
+docs/publication-resolution-runbook.md
+docs/verification-evidence/
+docs/evidence/
+docs/evaluations/
+docs/AI_LEARNING_*
+docs/BOTMERZZ_*
+docs/BotMerzz_*
+docs/VPS-DEPLOYMENT-READINESS.md
+docs/INTEGRATION-VERIFICATION-*.md

@@ -1,0 +1,96 @@
+# Architecture
+
+## Runtime shape
+
+The application is a small Node.js web service with an optional in-process poller that invokes the finite dispatcher. The dashboard, dispatcher and poller share MySQL state. Docker Compose runs the app and MySQL; `SCHEDULER_ENABLED` explicitly controls whether the app polls. The default is disabled so a fresh deployment cannot publish until an operator enables it.
+
+Admin browser -> Node.js HTTP server -> session/CSRF checks -> application services -> MySQL repository and provider adapters.
+
+The dispatcher calls the same application services. OpenRouter generates content; Tebar publishes and reports status; Telegram sends operational notifications. Tebar webhooks return through a signed endpoint and update the same durable state.
+
+## Boundaries
+
+- Domain policy validates schedule settings with a one-minute minimum cadence, fact freshness, content length, currency claims, approved account attributes, and onboarding state. Legacy active-day/hour settings do not gate publishing. It has no network or database code.
+- Content service selects a pillar and eligible fresh facts for OFF/ON/MIXED mode, builds a context from brand direction and recent captions, and requests a full Malaysian Malay caption. Deterministic checks validate length, links, hashtags, possible personal information, approved numbers, forbidden phrases and repetition. A separate model call reviews factual support, language and tone; malformed, rejected or unavailable reviews fail closed. One retry is allowed. These existing product and language defaults require NDI review before publishing is enabled.
+- Semantic review is probabilistic and uses the configured generation model. It cannot guarantee factual accuracy or detect all personal information; operators should review representative output before enabling publishing. Time-sensitive product information must originate in fresh approved facts.
+- Tebar adapter owns API URLs, Bearer authentication, account/status/list/cancel/insights requests, idempotency headers, and response normalization. Other modules use provider-neutral methods.
+- Telegram adapter sends bounded notifications and daily summaries. It redacts secrets and never exposes provider response bodies.
+- Repository owns SQL, migrations, transactions, durable slot state, sessions, facts, settings, audit events, and webhook deduplication.
+- Dispatcher claims one due slot at a time, generates and validates content, persists the exact request and idempotency key, submits the post, then reconciles status. It never blindly creates a new publish request after an uncertain outcome.
+- Telegram delivery uses a MySQL outbox with deduplication, retry backoff, and claim leases. Webhook state and its notification enqueue commit together; dispatcher runs retry pending notifications.
+- HTTP application serves static dashboard assets, authenticated JSON routes, login/session/logout, provider webhooks, health status, and safe error responses.
+- The integration configuration service persists a versioned Tebar profile/account pair and OpenRouter model in MySQL after one-time bootstrap. Each slot snapshots its publishing identity and the generation model; account switching is fenced through database state and leaves automation paused. See [Dynamic integration configuration](DYNAMIC-CONFIGURATION.md) for precedence, recovery, and provider limits.
+
+## Scheduling model
+
+New schedule settings default to 60 minutes and use `schedule.intervalMinutes` as the canonical MySQL JSON value. The UI accepts whole hours and minutes down to one minute. Legacy `schedule.intervalHours` values are converted during validation/read, without a schema migration. The IANA timezone defaults to `Asia/Jakarta`; due instants are stored in UTC. Publishing is 24/7. Persisted legacy active weekdays and daily time-window settings are ignored. Evaluate provider quotas, rate limits, latency and API cost before enabling a short interval. Missed slots are skipped without catch-up.
+
+The product schedule and scheduler poll interval are separate. The poller checks for due work every 60 seconds by default (configurable from 15 to 3,600 seconds). On automation enable, the app requests an immediate first dispatch; the next slot follows the newly configured interval. A slot already scheduled before an interval edit keeps its timestamp, and that updated interval is used afterward. The poller also runs immediately on startup and then polls; persisted slots survive restarts. The planner skips slots more than 15 minutes late instead of catching up. MySQL settings-row locks serialize claims across app processes, and claim/publish guards allow only one active generation or publish cycle per automation session. Unknown provider outcomes continue to block later slots until reconciled.
+
+The daily Telegram summary is scheduled for 22:00 `Asia/Jakarta` regardless of a stored schedule timezone.
+
+## Publish and recovery states
+
+Each slot has a unique scheduled instant and durable state: pending, generating, ready, publishing, published, failed, unknown, canceled, or skipped. The exact outbound body and Tebar idempotency key are stored before the request. Known provider IDs are reconciled through Tebar's status endpoint. A request with no known provider ID is never replayed automatically; unresolved slots block later publishing until an operator reconciles the outcome. Cancellation requests only target posts Tebar reports as still scheduled/draft; cancellation races are recorded distinctly.
+
+## Authentication and secret boundaries
+
+- The initial administrator is created by a local bootstrap command. Active admins have equal permissions; account changes are audited and password/email changes revoke sessions. Admin deactivation is soft and preserves references in audit history.
+- Passwords use Node's scrypt with a random salt. Session tokens are random, stored as hashes in MySQL, expire server-side, and rotate on login.
+- Mutating dashboard requests require same-origin validation and a per-session CSRF token. Cookies are secure in deployed HTTPS environments, HTTP-only, and SameSite strict.
+- Tebar, OpenRouter, Telegram, and database credentials are environment-only. The dashboard never returns their values.
+- The three non-secret integration identifiers are managed separately from environment-only credentials; configuration updates require authenticated sessions, Origin/CSRF checks, provider validation, and an expected version.
+- Webhook signatures are verified using the raw request body, a timestamp freshness window, constant-time HMAC comparison, and event-ID deduplication.
+- Provider errors are normalized to safe codes; raw response bodies and auth headers are not logged or sent through Telegram.
+
+## Storage choice
+
+MySQL is chosen because the dashboard and one-shot dispatcher need durable transactions and uniqueness constraints across separate HTTP and scheduled processes. Local Compose and the homelab deployment use MySQL 8.4. Production MySQL is private to the `bot-ndi_database` Docker network, has no host port, and persists in the dedicated `bot-ndi_mysql_data` volume. The database starts empty and receives ordered migrations. A tested encrypted backup is still required because a Docker volume is persistence, not a backup.
+
+## Deployment constraints
+
+GitHub-hosted CI handles pull requests and pushes to `main`. Production deployment is a separate manual `workflow_dispatch` from `main`, behind the protected `production` Environment and a dedicated repository self-hosted runner in the Bot NDI LXC. The runner checks out the validated SHA and builds the Docker image locally without publishing it to a registry. Each attempt uses a unique `<commit-sha>-<run-id>-<attempt>` release and image tag; the OCI revision label, release metadata, and health marker retain the full commit SHA. Concurrency serializes deployment, health verification gates promotion, and rollback starts the exact previously verified local image without deleting the database volume.
+
+The app binds to the operator-verified Bot NDI LXC address and configured host port for the existing Traefik gateway on LXC 10080. The intended public hostname is `https://botndi.sequein.my.id` through the existing Cloudflare Tunnel and Traefik path; no gateway change or new tunnel is performed by deployment. Runtime secrets stay in `/opt/bot-ndi/.env` on the LXC and are not synchronized from Git. `TRUST_PROXY` remains false until the real ingress path is verified. The first bootstrap keeps the scheduler, publishing integrations, and Learning flags disabled. The LXC address, gateway routing, public domain, and live deployment remain unverified until an approved release is performed.
+
+## Provider capabilities and MVP limits
+
+Tebar documents immediate publishing and scheduled publishing, idempotency keys, per-target status, scheduled-post cancellation, and Threads insights. Threads profile visits are not among the documented insight metrics. MVP awareness measurement is tracked-link clicks; website and conversion analytics are deferred.
+
+## HTTP route ownership
+
+`src/cli.js` is the composition root for configuration, MySQL, repositories, provider clients, the scheduler, and the Express app. `src/server.js` configures HTTP middleware and mounts feature-focused route registrations from `src/http/routes/`. Route modules receive repository, auth, middleware, and services through dependency injection; they do not create pools or provider clients.
+
+| Module | Method | Path |
+| --- | --- | --- |
+| `src/server.js` | GET | `/health/live` |
+| `src/server.js` | GET | `/health/ready` |
+| `src/http/routes/webhooks.js` | POST | `/webhooks/tebar` |
+| `src/http/routes/session-admin.js` | GET | `/api/session` |
+| `src/http/routes/session-admin.js` | POST | `/api/session/login` |
+| `src/http/routes/session-admin.js` | POST | `/api/session/logout` |
+| `src/http/routes/session-admin.js` | GET | `/api/admins` |
+| `src/http/routes/session-admin.js` | POST | `/api/admins` |
+| `src/http/routes/session-admin.js` | PATCH | `/api/admins/:id` |
+| `src/http/routes/templates.js` | GET | `/api/templates` |
+| `src/http/routes/templates.js` | POST | `/api/templates` |
+| `src/http/routes/templates.js` | PATCH | `/api/templates/:id` |
+| `src/http/routes/templates.js` | DELETE | `/api/templates/:id` |
+| `src/http/routes/dashboard.js` | GET | `/api/dashboard` |
+| `src/http/routes/dashboard.js` | PUT | `/api/settings` |
+| `src/http/routes/dashboard.js` | PUT | `/api/knowledge` |
+| `src/http/routes/dashboard.js` | PUT | `/api/facts/:service` |
+| `src/http/routes/integrations.js` | GET | `/api/integrations` |
+| `src/http/routes/integrations.js` | GET | `/api/integrations/models` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/validate-account` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/validate-model` |
+| `src/http/routes/integrations.js` | PUT | `/api/integrations/account` |
+| `src/http/routes/integrations.js` | PUT | `/api/integrations/model` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/reconcile` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/rollback` |
+| `src/http/routes/automation.js` | POST | `/api/automation/enable` |
+| `src/http/routes/automation.js` | POST | `/api/automation/pause` |
+
+`test/routes.contract.test.js` compares dashboard API calls with registered Express method/path pairs and verifies the route set and ordering.
+
+Webhook body parsing and fallback ordering are intentional: `/webhooks/tebar` uses raw-body parsing before `express.json()` so signature verification sees the signed bytes. The `/api` not-found handler stays after API routes and before static assets and the SPA fallback.

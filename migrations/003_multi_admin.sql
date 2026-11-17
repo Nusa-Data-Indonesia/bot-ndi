@@ -1,0 +1,12 @@
+SET @bot_ndi_ddl = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admins' AND index_name='singleton_key') > 0, 'ALTER TABLE admins DROP INDEX singleton_key', 'SELECT 1');
+PREPARE bot_ndi_migration_stmt FROM @bot_ndi_ddl;
+EXECUTE bot_ndi_migration_stmt;
+DEALLOCATE PREPARE bot_ndi_migration_stmt;
+SET @bot_ndi_ddl = IF((SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='admins' AND constraint_name='admins_chk_1' AND constraint_type='CHECK') > 0, 'ALTER TABLE admins DROP CHECK admins_chk_1', 'SELECT 1');
+PREPARE bot_ndi_migration_stmt FROM @bot_ndi_ddl;
+EXECUTE bot_ndi_migration_stmt;
+DEALLOCATE PREPARE bot_ndi_migration_stmt;
+SET @bot_ndi_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admins' AND column_name='singleton_key') > 0, 'ALTER TABLE admins DROP COLUMN singleton_key', 'SELECT 1');
+PREPARE bot_ndi_migration_stmt FROM @bot_ndi_ddl;
+EXECUTE bot_ndi_migration_stmt;
+DEALLOCATE PREPARE bot_ndi_migration_stmt;

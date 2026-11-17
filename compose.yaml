@@ -1,0 +1,101 @@
+name: bot-ndi
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:?Set DB_NAME in /opt/bot-ndi/.env}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in /opt/bot-ndi/.env}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in /opt/bot-ndi/.env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in /opt/bot-ndi/.env}
+      TZ: UTC
+    volumes:
+      - bot_ndi_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    mem_limit: 2g
+    cpus: 1.0
+    networks:
+      - database
+    # MySQL is only reachable on the internal Compose network, never by a host port.
+
+  app:
+    build:
+      context: ${BOT_NDI_BUILD_CONTEXT:-.}
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        VCS_REF: ${BOT_NDI_COMMIT_SHA:-local}
+    image: bot-ndi:${BOT_NDI_IMAGE_TAG:-local}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-3000}
+      BASE_URL: ${BASE_URL:?Set BASE_URL in /opt/bot-ndi/.env}
+      APPROVED_CTA_HOSTS: ${APPROVED_CTA_HOSTS:-}
+      TIMEZONE: ${TIMEZONE:-Asia/Jakarta}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:?Set DB_NAME in /opt/bot-ndi/.env}
+      DB_USER: ${DB_USER:?Set DB_USER in /opt/bot-ndi/.env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in /opt/bot-ndi/.env}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      TEBAR_API_KEY: ${TEBAR_API_KEY:-}
+      TEBAR_PROFILE_ID: ${TEBAR_PROFILE_ID:-}
+      TEBAR_ACCOUNT_ID: ${TEBAR_ACCOUNT_ID:-}
+      TEBAR_WEBHOOK_SECRET: ${TEBAR_WEBHOOK_SECRET:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-3.8-flash}
+      OPENROUTER_GENERATOR_TEMPERATURE: ${OPENROUTER_GENERATOR_TEMPERATURE:-}
+      OPENROUTER_GENERATOR_TOP_P: ${OPENROUTER_GENERATOR_TOP_P:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      LEARNING_CAPTURE_ENABLED: ${LEARNING_CAPTURE_ENABLED:-false}
+      LEARNING_ACTIVATION_ENABLED: ${LEARNING_ACTIVATION_ENABLED:-false}
+      LEARNING_RETRIEVAL_ENABLED: ${LEARNING_RETRIEVAL_ENABLED:-false}
+      LEARNING_PROMPT_INTEGRATION_ENABLED: ${LEARNING_PROMPT_INTEGRATION_ENABLED:-false}
+      LEARNING_SHADOW_ENABLED: ${LEARNING_SHADOW_ENABLED:-false}
+      LEARNING_RETENTION_ENABLED: ${LEARNING_RETENTION_ENABLED:-false}
+      LEARNING_RETENTION_DAYS: ${LEARNING_RETENTION_DAYS:-}
+    command: ["npm", "start"]
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${HOST_IP:?Set HOST_IP to the LXC's verified IP in /opt/bot-ndi/.env}:${HOST_PORT:-3000}:${PORT:-3000}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 220s
+    mem_limit: 768m
+    cpus: 1.0
+    networks:
+      database: {}
+      egress:
+        gw_priority: 1
+
+volumes:
+  bot_ndi_mysql_data:
+    name: bot-ndi_mysql_data
+
+networks:
+  database:
+    name: bot-ndi_database
+    driver: bridge
+    internal: true
+  egress:
+    name: bot-ndi_egress
+    driver: bridge
