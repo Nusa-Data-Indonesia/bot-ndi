@@ -20,9 +20,9 @@ const activeWorkflows = fs.readdirSync(workflowDir)
 const deployScript = fs.readFileSync(path.join(root, 'scripts/deploy-homelab.sh'), 'utf8');
 const verifier = fs.readFileSync(path.join(root, 'scripts/verify-deploy-trigger.js'), 'utf8');
 
-test('GitHub-hosted CI validates pull requests and main pushes with isolated MySQL', () => {
+test('GitHub-hosted CI validates pull requests and staged NDI branch pushes with isolated MySQL', () => {
   assert.match(workflow, /pull_request:\s*\n\s+branches:\s*\[main\]/);
-  assert.match(workflow, /push:\s*\n\s+branches:\s*\[main\]/);
+  assert.match(workflow, /push:\s*\n\s+branches:\s*\[main,\s*codex\/ndi-phase-b,\s*codex\/ndi-phase-c\]/);
   assert.match(workflow, /runs-on:\s*ubuntu-latest/);
   assert.match(workflow, /image:\s*mysql:8\.4/);
   assert.match(workflow, /MYSQL_DATABASE:\s*bot_ndi_test/);
