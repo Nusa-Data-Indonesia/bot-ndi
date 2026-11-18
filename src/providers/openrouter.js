@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { assertExternalIntegrationsEnabled } = require('../external-integrations');
 const TRANSPORT_CODES = new Set(["ECONNABORTED", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "EPIPE", "ERR_NETWORK", "ERR_CANCELED", "ERR_BAD_REQUEST", "ERR_BAD_RESPONSE"]);
 
 function providerError(code, status = null, { transportCode = null, timedOut = false } = {}) {
@@ -8,12 +9,13 @@ function providerError(code, status = null, { transportCode = null, timedOut = f
   });
 }
 
-function createOpenRouterClient({ apiKey, model, http = axios }) {
+function createOpenRouterClient({ apiKey, model, http = axios, enabled = false }) {
   if (typeof apiKey !== "string" || !apiKey.trim() || typeof model !== "string" || !model.trim()) {
     throw providerError("not_configured");
   }
 
   async function generate({ system, user, maxTokens = 400, temperature, topP, signal }) {
+    assertExternalIntegrationsEnabled(enabled);
     if (typeof system !== "string" || typeof user !== "string" || !user.trim()
       || !Number.isInteger(maxTokens) || maxTokens < 1
       || (temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2))

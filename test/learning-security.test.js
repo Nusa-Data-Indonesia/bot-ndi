@@ -98,7 +98,7 @@ test('Learning API failure responses and logs do not disclose database error det
   const pool={execute:async()=>{throw Object.assign(new Error(privateFailure),{code:'ER_ACCESS_DENIED_ERROR',status:500});}};
   const auth={authenticate:async(token)=>token==='valid'?{admin:{id:1},csrfToken:'c'.repeat(43)}:null};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
-  const server=http.createServer(createServer({config,repository:{},auth,services:{pool,logger:{error:(event,fields)=>logEntries.push({event,fields})},notify:async(event)=>notifications.push(event)}}));
+  const server=http.createServer(createServer({config,repository:{},auth,services:{pool,externalIntegrationsEnabled:true,logger:{error:(event,fields)=>logEntries.push({event,fields})},notify:async(event)=>notifications.push(event)}}));
   await new Promise((resolve)=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise((resolve)=>{server.close(resolve);server.closeAllConnections();}));
   const response=await request(server,'/api/learning/rules',{headers:{cookie:'bot_ndi_admin=valid'}});

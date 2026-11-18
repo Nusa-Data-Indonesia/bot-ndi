@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { assertExternalIntegrationsEnabled } = require('../external-integrations');
 
 function providerError(code, status = null, retryAfter = null) {
   return Object.assign(new Error(`Telegram request failed: ${code}`), {
@@ -9,10 +10,11 @@ function providerError(code, status = null, retryAfter = null) {
   });
 }
 
-function createTelegramClient({ botToken, chatId, http = axios }) {
+function createTelegramClient({ botToken, chatId, http = axios, enabled = false }) {
   if (typeof botToken !== "string" || !botToken.trim() || !chatId) throw providerError("not_configured");
 
   async function send(text) {
+    assertExternalIntegrationsEnabled(enabled);
     if (typeof text !== "string" || !text.trim()) throw providerError("invalid_request");
     const safeText = text.split(botToken).join("[REDACTED]")
       .replace(/\b(?:mysql|mariadb|postgres(?:ql)?|mongodb(?:\+srv)?|redis|rediss|sqlserver):\/\/[^\s"'<>]+/gi, "[REDACTED]")

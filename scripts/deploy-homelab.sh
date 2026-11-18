@@ -45,20 +45,18 @@ file_value_is_nonempty() {
   ' "$file"
 }
 
-file_value_is_empty() {
+file_value_is_defined() {
   local file="$1" key="$2"
   awk -F= -v key="$key" '
     /^[[:space:]]*#/ { next }
     {
       name = $1
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-      if (name == key) {
+      if (name == key && index($0, "=") > 0) {
         count++
-        value = substr($0, index($0, "=") + 1)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
       }
     }
-    END { exit !(count == 1 && length(value) == 0) }
+    END { exit !(count == 1) }
   ' "$file"
 }
 
@@ -83,7 +81,7 @@ ENVIRONMENT_KEYS=(
   BOT_NDI_IMAGE_TAG BOT_NDI_BUILD_CONTEXT BOT_NDI_COMMIT_SHA
   NODE_ENV PORT HOST_IP HOST_PORT BASE_URL APPROVED_CTA_HOSTS TIMEZONE TRUST_PROXY
   DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD DB_ROOT_PASSWORD DB_POOL_SIZE
-  SCHEDULER_ENABLED SCHEDULER_INTERVAL_SECONDS
+  SCHEDULER_ENABLED SCHEDULER_INTERVAL_SECONDS EXTERNAL_INTEGRATIONS_ENABLED
   TEBAR_API_KEY TEBAR_PROFILE_ID TEBAR_ACCOUNT_ID TEBAR_WEBHOOK_SECRET
   OPENROUTER_API_KEY OPENROUTER_MODEL OPENROUTER_GENERATOR_TEMPERATURE OPENROUTER_GENERATOR_TOP_P
   TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
@@ -293,12 +291,17 @@ if [[ "$INITIAL_BOOTSTRAP" == true ]]; then
     LEARNING_SHADOW_ENABLED \
     LEARNING_RETENTION_ENABLED; do
     if ! file_value_matches "$ENV_FILE" "$key" false; then
-      fail "initial bootstrap requires $key=false and scheduler/Learning execution disabled."
+      fail "initial bootstrap requires $key=false and scheduler, external integrations, and Learning execution disabled."
     fi
   done
+  if grep -Eq '^[[:space:]]*export[[:space:]]+EXTERNAL_INTEGRATIONS_ENABLED([[:space:]]*=|[[:space:]]*$)' "$ENV_FILE" ||
+     { grep -Eq '^[[:space:]]*EXTERNAL_INTEGRATIONS_ENABLED([[:space:]]*=|[[:space:]]*$)' "$ENV_FILE" &&
+       ! file_value_matches "$ENV_FILE" EXTERNAL_INTEGRATIONS_ENABLED false; }; then
+    fail "initial bootstrap requires EXTERNAL_INTEGRATIONS_ENABLED=false when configured."
+  fi
   for key in TEBAR_API_KEY TEBAR_PROFILE_ID TEBAR_ACCOUNT_ID TEBAR_WEBHOOK_SECRET OPENROUTER_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
-    if ! file_value_is_empty "$ENV_FILE" "$key"; then
-      fail "initial bootstrap requires new external integration credentials to remain unset."
+    if ! file_value_is_defined "$ENV_FILE" "$key"; then
+      fail "initial bootstrap requires one runtime environment entry for $key."
     fi
   done
 fi
@@ -540,6 +543,7 @@ fi
 RUNTIME_ENV="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$APP_CONTAINER_ID" 2>/dev/null || true)"
 for key in \
   SCHEDULER_ENABLED \
+  EXTERNAL_INTEGRATIONS_ENABLED \
   LEARNING_CAPTURE_ENABLED \
   LEARNING_ACTIVATION_ENABLED \
   LEARNING_RETRIEVAL_ENABLED \

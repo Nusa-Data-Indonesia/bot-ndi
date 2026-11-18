@@ -124,8 +124,8 @@ Isi dengan credential baru, hanya di LXC:
 - `APPROVED_CTA_HOSTS`: kosongkan sampai NDI menyetujui hostname tujuan tautan pemasaran; `botndi.sequein.my.id` adalah domain aplikasi dan tidak dianggap otomatis sebagai domain CTA.
 - `TRUST_PROXY`: setelah memeriksa route gateway, isi alamat IP aktual Traefik yang menjadi peer koneksi ke aplikasi. Untuk sementara gunakan `false` jika alamat sumber belum diverifikasi; jangan gunakan `true` atau rentang umum.
 - `DB_NAME=bot_ndi` dan `DB_USER=bot_ndi_app`; buat nilai baru dan unik untuk `DB_PASSWORD` serta `DB_ROOT_PASSWORD`.
-- Biarkan `SCHEDULER_ENABLED=false` dan semua `LEARNING_*_ENABLED=false`.
-- Biarkan `TEBAR_*`, `OPENROUTER_API_KEY`, dan `TELEGRAM_*` kosong sampai akun NDI diverifikasi dan integrasi baru disiapkan.
+- Biarkan `EXTERNAL_INTEGRATIONS_ENABLED=false`, `SCHEDULER_ENABLED=false`, dan semua `LEARNING_*_ENABLED=false` selama initial deployment.
+- Kredensial `TEBAR_*`, `OPENROUTER_API_KEY`, dan `TELEGRAM_*` khusus NDI boleh tetap terisi. Jika `.env` yang sudah ada belum memiliki `EXTERNAL_INTEGRATIONS_ENABLED`, runtime menganggapnya `false`; workflow tidak mengedit `.env` produksi. Sakelar eksternal yang mati mencegah request provider, AI generation, Threads publishing, webhook processing, dan pengiriman notifikasi.
 
 Buat password dengan password manager atau generator lokal tepercaya, lalu masukkan melalui editor. Jangan menaruh credential dalam GitHub Actions secret, argumen shell, issue, chat, atau log. File environment harus terbaca runner deployment dan tidak oleh user lain:
 
@@ -136,6 +136,8 @@ stat -c '%a %U:%G %n' /opt/bot-ndi/.env
 ```
 
 Selesaikan langkah ini bila output menunjukkan mode `600`, owner `bot-ndi-runner:bot-ndi-runner`, dan tidak ada nilai credential kosong. Jangan memakai atau menyalin environment, volume, network, ataupun credential dari aplikasi lain.
+
+Setelah deployment pertama berhasil dan pemilik NDI menyetujui validasi integrasi, operator dapat mengganti `EXTERNAL_INTEGRATIONS_ENABLED=true` lalu membuat ulang service app. Validasi account/model dan panggilan provider baru tersedia sesudah perubahan ini. Untuk mengizinkan scheduler, operator juga harus menyetel `SCHEDULER_ENABLED=true`; publikasi Threads tetap memerlukan konfigurasi lengkap dan aksi eksplisit admin pada kontrol aktivasi automation.
 
 ## 4. Pasang runner khusus repository
 

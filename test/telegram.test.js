@@ -5,7 +5,7 @@ const { createTelegramClient } = require("../src/providers/telegram");
 const token = "123456:fake-telegram-token";
 
 test("Telegram sends plain bounded text to the configured group with secrets redacted", async () => {
-  const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: async (request) => {
+  const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: async (request) => {
     assert.equal(request.method, "POST");
     assert.equal(request.url, `https://api.telegram.org/bot${token}/sendMessage`);
     assert.equal(request.data.chat_id, "-100123");
@@ -22,7 +22,7 @@ test("Telegram sends plain bounded text to the configured group with secrets red
 test("Telegram API rejection and network uncertainty never expose token URL or body", async () => {
   for (const network of [false, true]) {
     let calls = 0;
-    const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: async () => {
+    const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: async () => {
       calls++;
       if (network) throw Object.assign(new Error(`https://api.telegram.org/bot${token}/sendMessage`), { config: { url: token }, response: undefined });
       return { data: { ok: false, error_code: 429, description: token, parameters: { retry_after: 30 } } };
@@ -39,12 +39,12 @@ test("Telegram API rejection and network uncertainty never expose token URL or b
 });
 
 test("empty notifications do not send an invalid Telegram request", async () => {
-  const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: () => assert.fail("must not send") } });
+  const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: () => assert.fail("must not send") } });
   await assert.rejects(api.send("  "), { code: "invalid_request" });
 });
 
 test("quoted credential fields and Basic authorization are removed from notifications", async () => {
-  const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: async (request) => {
+  const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: async (request) => {
     assert.doesNotMatch(request.data.text, /secret-value|encoded-credential|private-value/);
     return { data: { ok: true, result: { message_id: 8 } } };
   } } });
@@ -53,7 +53,7 @@ test("quoted credential fields and Basic authorization are removed from notifica
 
 test("database URLs, connection strings, and URL userinfo are removed before sending", async () => {
   let sent;
-  const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: async (request) => {
+  const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: async (request) => {
     sent = request.data.text;
     return { data: { ok: true, result: { message_id: 9 } } };
   } } });
@@ -64,6 +64,6 @@ test("database URLs, connection strings, and URL userinfo are removed before sen
 });
 
 test("raw Error objects are rejected rather than stringified into Telegram messages", async () => {
-  const api = createTelegramClient({ botToken: token, chatId: "-100123", http: { request: () => assert.fail("must not send") } });
+  const api = createTelegramClient({ botToken: token, chatId: "-100123", enabled: true, http: { request: () => assert.fail("must not send") } });
   await assert.rejects(api.send(new Error("arbitrary private response")), { code: "invalid_request" });
 });

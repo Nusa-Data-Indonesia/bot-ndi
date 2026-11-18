@@ -5,7 +5,7 @@ const { createTebarClient } = require("../src/providers/tebar");
 
 const post = (status) => ({ id: "post-1", status, scheduled_at: null, targets: [] });
 function client(request) {
-  return createTebarClient({ apiKey: "tb_live_secret", profileId: "staging", http: { request } });
+  return createTebarClient({ apiKey: "tb_live_secret", profileId: "staging", enabled: true, http: { request } });
 }
 
 test("publish preserves the persisted body and idempotency key on replay", async () => {
