@@ -37,7 +37,7 @@ Rencana ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Branch kerja `codex
 
 ### Verifikasi dan gate A
 
-- `npm test`: **PASS**, 415 pass, 0 fail, 25 skipped (database tests run separately on disposable schemas), total 440.
+- `npm test`: **PASS**, 437 pass, 0 fail, 25 skipped (database tests run separately on disposable schemas), total 462.
 - `npm run test:integration` pada MySQL 8.4 disposable: **PASS**, 93 pass, 0 fail, 0 skip.
 - Migration tests: **PASS** — upgrade 001–020→021, migration 018 recovery, learning upgrade 011→021, publication migration 020, publication fence, dan legacy publication resolution; masing-masing satu skenario database.
 - Publication resolution MySQL: **PASS**, 10/10 (restart, concurrency, audit, account-switch blockers, no blind replay).
@@ -65,8 +65,8 @@ Rencana ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Branch kerja `codex
 ## Deployment, rollback, dan kriteria GO/NO-GO
 
 1. Gunakan satu PR reviewable untuk Fase A menuju `main`; jangan menggabungkan fase. PR bukan izin merge.
-2. Sebelum merge, cek hasil GitHub CI dan pastikan prosedur auto-deploy yang sebenarnya dipakai operator. Merge diperlakukan sebagai tindakan produksi sesuai SSOT walaupun workflow pada branch dasar menampilkan trigger manual.
+2. `origin/main` saat ini menjalankan deploy otomatis setelah CI push ke `main` sukses. Deployment script menahan jalur otomatis untuk perubahan migration/startup surface; perubahan Fase A memerlukan prosedur manual yang ditinjau operator. Merge tetap dianggap tindakan produksi dan dilarang tanpa persetujuan eksplisit.
 3. Sebelum deployment, operator harus meninjau database state efektif dan slot `ready/publishing/unknown`; knowledge migration belum disetujui dan automation tidak dapat diaktifkan sampai admin meninjau NDI knowledge.
 4. Buat backup MySQL manual sesuai prosedur operator; Codex tidak membuat backup terjadwal, menjalankan migration produksi, mengubah volume, atau memulihkan produksi.
 5. Review rollback dengan database pada schema setelah 021; gambar lama tidak otomatis membaca schema/arsip baru, dan config lama telah dikeluarkan dari runtime JSON aktif. Jangan rollback app image tanpa prosedur yang diuji.
-6. **GO untuk review PR lokal:** source/tests/docs Fase A siap ditinjau, CI GitHub masih menunggu. **NO-GO merge/deploy:** GitHub CI dan production state/rollback masih memerlukan operator review. Tidak ada real post, scheduler activation, merge, atau deploy.
+6. **GO untuk review PR lokal:** source/tests/docs Fase A siap ditinjau, CI GitHub masih menunggu. **NO-GO merge/deploy:** GitHub CI dan production state/rollback masih memerlukan operator review; migration 021 ditahan oleh automatic-deployment guard dan memerlukan jalur manual yang ditinjau setelah persetujuan. Tidak ada real post, scheduler activation, merge, atau deploy.

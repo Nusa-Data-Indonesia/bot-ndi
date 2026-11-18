@@ -103,7 +103,7 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 | T-17 | R-030 | B | NOT_YET_IMPLEMENTED | Binding category/style per slot belum dibuat; CTA/idempotency baseline A lulus. |
 | T-18 | R-032 | B | NOT_YET_IMPLEMENTED | Proposal/approval category belum dibuat; menunggu Fase B. |
 | T-19 | R-033, R-034 | B | NOT_YET_IMPLEMENTED | Proposal job belum dibuat dan tidak diaktifkan. |
-| T-20 | R-004, R-045–R-047, R-051, R-052, R-054 | A | PASS | `npm test`: 415 pass/0 fail/25 skip; `npm run test:integration`: 93 pass/0 fail/0 skip pada MySQL disposable. Scheduler, auth/session, dispatcher, provider mock, retries, unknown, notifications dan konfigurasi diregresikan; readiness production tetap menahan posting sampai B. |
+| T-20 | R-004, R-045–R-047, R-051, R-052, R-054 | A | PASS | `npm test`: 437 pass/0 fail/25 skip (462 total); `npm run test:integration`: 93 pass/0 fail/0 skip pada MySQL disposable. Scheduler, auth/session, dispatcher, provider mock, retries, unknown, notifications dan konfigurasi diregresikan; readiness production tetap menahan posting sampai B. |
 | T-21 | R-048, R-050, R-052, R-053 | A | PASS | `test/publication-resolution.mysql.integration.test.js`: 10/10 PASS; restart, concurrency, audit, account-switch blockers, no blind replay. |
 | T-22 | R-049, R-050, R-071 | A/B/C | PASS | Unit/route/auth/CSRF UI tests dan `npm run test:ndi:browser`: 3/3 lulus pada MySQL disposable/Chromium lokal; UI menunjukkan waktu, error/status, target asal dan recovery aman. |
 | T-23 | R-019, R-057 | C | NOT_YET_IMPLEMENTED | Sync website tidak dibuat; tidak ada fetch route/job. |
@@ -113,11 +113,11 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 | T-27 | R-062 | C | NOT_YET_IMPLEMENTED | Website failure path belum dibuat karena sync belum ada. |
 | T-28 | R-037, R-058 | C | NOT_YET_IMPLEMENTED | Origin sinkronisasi website yang tetap dan alur sync belum dibuat; pemisahan CTA bebas dari dashboard telah diuji T-07. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose, Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus; GitHub CI belum berjalan, `actionlint` tidak tersedia, rollback produksi belum disetujui. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose, Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus; GitHub CI belum berjalan, `actionlint` tidak tersedia, dan perubahan migrasi 021 memerlukan jalur deployment manual yang ditinjau operator. |
 
 ## Hasil verifikasi lokal terakhir
 
-- `npm test`: **PASS**, 415 pass, 0 fail, 25 skipped (tes MySQL yang secara sengaja memerlukan schema disposable terisolasi), 440 total.
+- `npm test`: **PASS**, 437 pass, 0 fail, 25 skipped (tes MySQL yang secara sengaja memerlukan schema disposable terisolasi), 462 total.
 - `npm run test:integration`: **PASS**, 93 pass, 0 fail, 0 skip pada MySQL 8.4 disposable.
 - `test/ndi-migration.mysql.integration.test.js`: **PASS**, 1 test; migrasi 001–020→021, rerun, data/config/admin/session/fakta/slot/status terjaga.
 - `test/publication-resolution.mysql.integration.test.js`: **PASS**, 10 tests; restart, concurrency, audit, account switch dan tanpa blind replay.

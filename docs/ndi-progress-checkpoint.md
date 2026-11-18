@@ -1,12 +1,12 @@
 # Checkpoint Pekerjaan Bot NDI
 
 Diperbarui: 2026-11-18
-Branch kerja: `codex/ndi-phase-a`, berbasis `origin/main` (`f94ad20`)
+Branch kerja: `codex/ndi-phase-a`, berbasis `origin/main` (`a9858d2`)
 Cakupan: implementasi Fase A saja; Fase B/C tetap pekerjaan berikutnya.
 
 ## Status
 
-Implementasi Fase A siap untuk review source lokal dengan batas yang dijelaskan di traceability matrix. Belum ada commit, push, atau Pull Request. Tidak ada merge, deployment, migrasi production, aktivasi scheduler, atau posting Threads.
+Implementasi Fase A sudah dikomit lokal sebagai `ddcbfb0` dan direbase ke `origin/main` terbaru. Belum dipush dan Pull Request belum dibuat. Tidak ada merge, deployment, migrasi production, aktivasi scheduler, atau posting Threads.
 
 ## Requirement dan audit
 
@@ -14,6 +14,7 @@ Implementasi Fase A siap untuk review source lokal dengan batas yang dijelaskan 
 - Requirements Traceability Matrix memuat R-001–R-073 dan T-01–T-30. Hasil terakhir: 46 DONE, R-045/R-053 IN_PROGRESS karena binding kategori/gaya adalah dependency Fase B; R-055/R-068 BLOCKED hanya untuk pemeriksaan state/rollback produksi yang tidak boleh dilakukan tanpa operator. Sisa 23 TODO adalah Fase B/C.
 - Audit arsitektur/runtime, data, dashboard/API, knowledge/prompt, scheduler/providers/retry/unknown, auth/session/audit, migrations, Compose/CI/deploy/rollback dicatat di `docs/ndi-codebase-audit.md`.
 - Rencana Fase A/B/C dan risiko kompatibilitas tersedia di `docs/ndi-implementation-plan.md`.
+- `origin/main` memiliki deployment otomatis setelah CI push ke `main` sukses. Guard deploy menahan perubahan migration/startup surface dari jalur otomatis; migrasi 021 perlu jalur manual setelah review/persetujuan operator.
 
 ## Implementasi Fase A
 
@@ -27,7 +28,7 @@ Implementasi Fase A siap untuk review source lokal dengan batas yang dijelaskan 
 
 ## Verifikasi lokal
 
-- `npm test`: PASS — 415 lulus, 0 gagal, 25 dilewati karena butuh schema DB disposable (440 total).
+- `npm test`: PASS — 437 lulus, 0 gagal, 25 dilewati karena butuh schema DB disposable (462 total).
 - `npm run test:integration`: PASS — 93 lulus pada MySQL 8.4 disposable.
 - Migrasi 021, migration 018, learning upgrade 011→021, publication migration 020, publication fence, dan legacy publication resolution: PASS, masing-masing satu test database.
 - Publication resolution MySQL: PASS — 10/10.
@@ -47,8 +48,6 @@ Implementasi Fase A siap untuk review source lokal dengan batas yang dijelaskan 
 
 ## Berikutnya
 
-1. Baca ulang SSOT penuh dan audit requirement awal/tengah/akhir sebelum final.
-2. Cocokkan 73 requirement dan test matrix terhadap perubahan aktual, periksa source/UI legacy aktif dan `git diff --check`.
-3. Hentikan container DB test ephemeral setelah seluruh run.
-4. Stage hanya perubahan Fase A, pertahankan dua nilai temperature user di luar stage, commit di branch ini, push, dan buat PR ke `main` jika akses tersedia. Jangan merge.
-5. Catat status PR, CI, risiko produksi, dan NO-GO deployment di laporan akhir.
+1. Push branch `codex/ndi-phase-a` dan buat PR ke `main` jika akses tersedia; jangan merge.
+2. Catat status PR dan CI di checkpoint setelah hasilnya diketahui.
+3. Pertahankan NO-GO untuk merge/deployment sampai operator meninjau database produksi dan prosedur migrasi/rollback.

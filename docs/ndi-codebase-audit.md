@@ -1,14 +1,18 @@
 # Audit Codebase Bot NDI
 
 Tanggal: 2026-11-18
-Branch: `codex/ndi-phase-a`, basis `origin/main` (`f94ad20`)
+Branch: `codex/ndi-phase-a`, basis `origin/main` (`a9858d2`)
 SSOT: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris; seluruh baris dibaca ulang dalam rentang berurutan 1–130, 131–260, dan 261–377.
 
 ## Cakupan dan batas bukti
 
+`docs/PRE-DEPLOYMENT-READINESS.md` adalah snapshot historis sebelum Fase A (migration 021), bukan bukti kesiapan branch ini. Dokumen itu kini diberi penanda dan tautan ke laporan ini. Dokumen remediation dan audit UI/security lama juga tetap dipertahankan sebagai histori; banner-nya mengarah ke kebijakan NDI aktif.
+
 Audit menelusuri alur startup, konfigurasi efektif, generator, database/repository, dashboard/API, dispatcher/scheduler, OpenRouter, Tebar, Telegram, retry/unknown, autentikasi/CSRF/audit, migrasi, Compose, CI, deployment, dan dokumen operasional. Pencarian case-insensitive mencakup variasi `Kedai Merzz`, `BotMerzz`, top-up, game, harga/stok/SKU, `gameWhitelist`, `priceMode`, `trackedLinks`, fakta layanan, template, dan learning; hasil legacy diklasifikasikan di bawah sebagai aktif, guardrail penolak, kompatibilitas, histori, atau dihapus dari jalur aktif.
 
 Tidak ada koneksi ke database, `.env`, LXC, provider, scheduler produksi, GitHub Actions produksi, atau aplikasi/infrastruktur BotMerzz terpisah. Isi aktual database, `automation_enabled`, konfigurasi akun, serta slot produksi `ready/publishing/unknown` tetap tidak diketahui. Bukti migrasi berasal dari MySQL 8.4 disposable tanpa volume, bukan salinan data produksi.
+
+`origin/main` yang diaudit menjalankan workflow deploy otomatis setelah CI push ke `main` sukses, serta workflow manual untuk operasi terkontrol/rollback. Script deployment memblokir jalur otomatis bila migration atau startup-execution surface berubah dan mengarahkan perubahan tersebut ke jalur manual yang memerlukan review operator. Fase A menambahkan migrasi 021, jadi merge tetap NO-GO tanpa persetujuan operator dan prosedur deployment migrasi yang ditinjau.
 
 ## Arsitektur dan alur runtime
 
@@ -61,7 +65,7 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 
 | Pemeriksaan | Hasil lokal |
 |---|---|
-| `npm test` | PASS: 415 pass, 0 fail, 25 skip; skip adalah tes MySQL yang dijalankan terpisah pada schema disposable |
+| `npm test` | PASS: 437 pass, 0 fail, 25 skip (462 total); skip adalah tes MySQL yang dijalankan terpisah pada schema disposable |
 | `npm run test:integration` dengan MySQL 8.4 disposable | PASS: 93 pass, 0 fail, 0 skip; termasuk auth/session, database integration, dispatcher, webhook, konfigurasi dan unknown/publish fence |
 | Migration 021 dan regressions MySQL terkait | PASS masing-masing: 021 upgrade 1; migration 018 1; learning upgrade 011→021 1; publication migration 020 1; publication fence 1; legacy publication resolution 1 |
 | Publication resolution MySQL 8.4 | PASS: `test/publication-resolution.mysql.integration.test.js`, 10 pass; rekonsiliasi, restart, concurrency, audit, account-switch blocker |
