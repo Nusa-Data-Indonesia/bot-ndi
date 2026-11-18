@@ -42,7 +42,7 @@ Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Kandidat `codex/ndi
 - `npm test`: 510 total, 504 pass, 0 fail, 6 skipped; enam migration tests dijalankan terpisah dan semuanya lulus.
 - `npm run test:integration`: 94 pass; MySQL config check: 1 pass. Dedicated migration tests untuk 018, Learning upgrade, publication resolution 020/fence/legacy closure dan NDI 021–023 masing-masing 1/1 pass pada MySQL 8.4 disposable. Restart test juga pass pada storage disposable yang mempertahankan data.
 - `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit` (0 vulnerabilities), `bash -n`, Compose config, Docker build, Browser E2E 4/4, dan workflow regression checks: PASS.
-- `actionlint v1.7.12` lulus dengan ignore sempit untuk custom self-hosted label `bot-ndi` dan properti `concurrency.queue` yang didukung dokumentasi GitHub namun belum dikenali schema linter. CI PR #4/#5 sebelumnya lulus, tetapi bukan bukti CI untuk kandidat integrasi. CI kandidat menunggu PR.
+- `actionlint v1.7.12` lulus dengan ignore sempit untuk custom self-hosted label `bot-ndi` dan properti `concurrency.queue` yang didukung dokumentasi GitHub namun belum dikenali schema linter. GitHub Actions PR integrasi #6 run `44333658497` lulus pada candidate commit `bab30a40b22e46d11fa7657cd3d07855ad12a785`.
 - Dua percobaan awal gagal akibat konfigurasi pengujian (MySQL disposable `tmpfs` tidak mempertahankan data setelah restart, serta migration tests berbagi schema saat dijalankan paralel); keduanya lulus setelah setup diperbaiki dan migration tests dijalankan serial pada schema disposable baru.
 - Tidak menjalankan provider nyata, posting Threads, scheduler, atau migrasi pada produksi. Detail per-test ada di `docs/ndi-requirements-traceability.md`.
 

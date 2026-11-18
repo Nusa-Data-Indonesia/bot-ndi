@@ -1,7 +1,7 @@
 # Checkpoint Pekerjaan Bot NDI
 
 Diperbarui: 2026-11-18
-Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2fc7c1006e6548841055426070d6f84b4b`; merge commit memuat PR #3/#4/#5 lengkap satu kali. PR #3/#4/#5 tetap terbuka dan tidak diubah. Quality gates lokal selesai; PR integrasi menuju `main` akan dibuat untuk menjalankan gate GitHub pada kandidat ini.
+Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2fc7c1006e6548841055426070d6f84b4b`; merge commit memuat PR #3/#4/#5 lengkap satu kali. PR integrasi [#6](https://github.com/Nusa-Data-Indonesia/bot-ndi/pull/6) menuju `main` terbuka. PR #3/#4/#5 tetap terbuka dan tidak diubah. GitHub Actions run `44333658497` lulus pada candidate commit `bab30a40b22e46d11fa7657cd3d07855ad12a785`.
 
 ## Otorisasi dan batas keselamatan
 
@@ -44,7 +44,7 @@ Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2
 - MySQL 8.4 disposable migration tests: migration 018 recovery, Learning upgrade, publication migration 020, publication fence, legacy publication closure, serta migration NDI 021–023 semuanya **1/1 PASS**. Publication resolution regression tests di suite utama juga PASS.
 - Browser E2E **4/4 PASS** dengan Chromium lokal dan MySQL disposable loopback; scheduler/integrasi nonaktif, website API di-intercept, tanpa provider atau real-site fetch.
 - `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit --audit-level=high` (0 vulnerabilities), `bash -n scripts/deploy-homelab.sh`, Compose config validation, dan Docker runtime build **PASS**.
-- `actionlint v1.7.12` **PASS** dengan pengecualian terarah untuk custom runner label `bot-ndi` dan `concurrency.queue` yang didukung GitHub tetapi belum dikenali schema actionlint. Workflow regression tests juga lulus di `npm test`. GitHub CI pada PR integrasi **belum dijalankan** sebelum PR dibuat.
+- `actionlint v1.7.12` **PASS** dengan pengecualian terarah untuk custom runner label `bot-ndi` dan `concurrency.queue` yang didukung GitHub tetapi belum dikenali schema actionlint. Workflow regression tests juga lulus di `npm test`. GitHub CI PR #6 run `44333658497` **PASS** pada commit kandidat yang tercatat di atas.
 - Dua percobaan uji awal gagal karena harness: `tmpfs` menghapus database saat restart, dan beberapa test migration berbagi schema saat dijalankan paralel. Rerun dengan storage disposable persisten dan urutan serial lulus; tidak ada kegagalan final pada source candidate.
 
 ### Klasifikasi hasil
@@ -52,10 +52,10 @@ Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2
 - **PASS:** semua quality gates lokal di atas; 73 requirement terpetakan; test matrix lokal T-01–T-30 diperiksa terhadap source/tests.
 - **FAIL:** 0 pada rerun final. Kegagalan harness awal dijelaskan di atas dan tidak dihitung sebagai pass.
 - **SKIPPED:** 6 test migration DB pada `npm test` karena membutuhkan schema disposable khusus; masing-masing lulus saat dijalankan terpisah.
-- **NOT_EXECUTED:** backup/restore (operator risk acceptance), provider connectivity, jalur publikasi nyata/Threads, migrasi produksi, deployment, serta GitHub CI kandidat sebelum PR dibuat.
+- **NOT_EXECUTED:** backup/restore (operator risk acceptance), provider connectivity, jalur publikasi nyata/Threads, migrasi produksi, dan deployment.
 
 ## Next steps
 
-1. Push branch dan buat PR integrasi A+B+C ke `main`; PR #3/#4/#5 tetap terbuka sampai cakupan PR integrasi dibuktikan.
-2. Tunggu CI PR integrasi dan jangan merge/deploy tanpa persetujuan eksplisit.
+1. Operator review PR #6 integrasi A+B+C; PR #3/#4/#5 tetap terbuka sampai cakupan PR integrasi disetujui.
+2. Jangan merge/deploy tanpa persetujuan eksplisit; merge ke `main` dapat memicu auto-deployment.
 3. Jangan mengklaim provider connectivity atau backup/restore telah diuji; operator risk acceptance R-068 dan evidence R-055 tercatat di atas.

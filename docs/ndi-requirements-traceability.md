@@ -113,20 +113,20 @@ Cakupan kandidat integrasi: seluruh sejarah PR #3/#4/#5 bertingkat tergabung sek
 | T-27 | R-062 | C | PASS | `test/website-knowledge-sync.test.js` verifies DNS/fetch/parse failure records failure without changing approved knowledge or posting state. |
 | T-28 | R-037, R-058 | C | PASS | Tests assert fixed official sync origin and keep it independent from dashboard BASE_URL and the editable CTA; no real-site fetch. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B/C | NOT_EXECUTED | Local Docker Compose/build, shell syntax, workflow regression tests, and `actionlint v1.7.12` pass. Actionlint was run with narrow ignores for custom runner label `bot-ndi` and GitHub-supported `concurrency.queue`; GitHub CI on the integration PR has not run yet. Backup/restore is NOT_EXECUTED under the operator's risk acceptance. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B/C | PASS | Compose/build, shell syntax, workflow regression tests, and `actionlint v1.7.12` pass. GitHub Actions PR #6 run `44333658497` passed on candidate commit `bab30a40b22e46d11fa7657cd3d07855ad12a785`. Actionlint used narrow ignores for custom runner label `bot-ndi` and GitHub-supported `concurrency.queue`. Backup/restore remains NOT_EXECUTED under operator risk acceptance. |
 
 ## Hasil verifikasi aktual
 
-- **PASS:** `npm test` 510 total / 504 passed / 0 failed / 6 skipped; `npm run test:integration` 94/94 plus MySQL config 1/1; six dedicated MySQL migration tests 1/1 each; Browser E2E 4/4; lint, full typecheck, syntax, `npm audit` (0 vulnerabilities), Compose config, Docker runtime build, deploy-shell syntax, and workflow lint/regression checks.
+- **PASS:** `npm test` 510 total / 504 passed / 0 failed / 6 skipped; `npm run test:integration` 94/94 plus MySQL config 1/1; six dedicated MySQL migration tests 1/1 each; Browser E2E 4/4; lint, full typecheck, syntax, `npm audit` (0 vulnerabilities), Compose config, Docker runtime build, deploy-shell syntax, workflow lint/regression checks, and GitHub Actions PR #6 run `44333658497`.
 - **FAIL:** 0 on final reruns. An initial restart test failed with MySQL on `tmpfs` because the disposable DB disappeared at restart; an initial parallel migration invocation collided on a shared test schema. Both were rerun with persistent disposable storage / serial isolated-schema execution and passed.
 - **SKIPPED:** six schema-specific migration tests are skipped by the broad `npm test` invocation; all six passed in dedicated runs on disposable MySQL 8.4. No production or provider test was skipped and then misreported as pass.
-- **NOT_EXECUTED:** GitHub Actions run on the integration PR (not created at the time of this checkpoint), production backup/restore (operator risk acceptance), provider connectivity, live publication/Threads, and production migration/deployment.
+- **NOT_EXECUTED:** production backup/restore (operator risk acceptance), provider connectivity, live publication/Threads, and production migration/deployment.
 - `actionlint v1.7.12` passes when ignoring two known diagnostics: the repository's custom self-hosted label `bot-ndi`, and the GitHub-supported `concurrency.queue` key not recognized by this actionlint schema. The workflow regression tests passed. No real Threads post, scheduler activation, production migration, merge, deployment, or Docker volume deletion occurred.
 
 ## Coverage dan gate tersisa
 
 - Requirement IDs: **73 DONE**, **0 TODO/IN_PROGRESS/BLOCKED**. R-055 memakai evidence konfigurasi yang diberikan operator; R-068 selesai dengan risk acceptance yang tercatat, sementara backup/restore test tetap NOT_EXECUTED.
-- Coverage matrix: semua ID R-001–R-073 dan T-01–T-30 ada tepat satu kali. T-01–T-29 **PASS**; T-30 menunggu hasil GitHub Actions PR integrasi. Status backup/restore, konektivitas provider, dan jalur publikasi nyata dilaporkan terpisah sebagai NOT_EXECUTED.
+- Coverage matrix: semua ID R-001–R-073 dan T-01–T-30 ada tepat satu kali. T-01–T-30 **PASS** berdasarkan bukti per baris. Status backup/restore, konektivitas provider, dan jalur publikasi nyata dilaporkan terpisah sebagai NOT_EXECUTED.
 - Tidak ada provider Threads nyata, scheduler produksi, migrasi produksi, merge, deployment, atau penghapusan volume Docker.
 
 ## Change-group checkpoints

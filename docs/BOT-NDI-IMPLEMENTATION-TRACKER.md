@@ -2,7 +2,7 @@
 
 Sumber requirement: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` (R-001–R-073). Status mengikuti bukti source dan tes pada kandidat integrasi `codex/ndi-abc-integration`, yang memuat seluruh sejarah PR #3/#4/#5. `VERIFIED` berarti implementasi dan tes lokal yang disebut tersedia; catatan `NOT_EXECUTED` tetap membatasi klaim operasional.
 
-Ringkasan: **73 VERIFIED**, **0 BLOCKED**. R-055 didukung snapshot konfigurasi yang dilaporkan operator; R-068 mencatat operator risk acceptance untuk tidak menjalankan backup/restore test. Test backup/restore berstatus **NOT_EXECUTED**, bukan PASS. Uji lokal gabungan lulus; GitHub CI kandidat integrasi menunggu PR.
+Ringkasan: **73 VERIFIED**, **0 BLOCKED**. R-055 didukung snapshot konfigurasi yang dilaporkan operator; R-068 mencatat operator risk acceptance untuk tidak menjalankan backup/restore test. Test backup/restore berstatus **NOT_EXECUTED**, bukan PASS. Uji lokal gabungan dan GitHub CI PR #6 run `44333658497` lulus.
 
 | ID | Requirement | Phase | Status | File implementasi / target | Test IDs | Bukti / batas | Dependencies | Risk / guardrail |
 |---|---|---|---|---|---|---|---|---|
