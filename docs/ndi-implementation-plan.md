@@ -43,7 +43,7 @@ Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Fase A berada di PR
 - Deployment shell tests pass within `npm test`. MySQL 8.4 migration 021–023: 1/1 pass; publication-resolution MySQL: 10/10 pass. `npm run test:integration`: 94 pass; MySQL config check: 1 pass.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation: PASS.
 - Browser E2E: **PASS 4/4** on local Chromium and disposable MySQL; integrations and scheduler disabled.
-- Docker build dan Compose validation: **PASS**. PR #4 dan #5 terbuka. CI runs `44310912797` (B: 492 pass/1 fail/7 skipped) dan `44310952126` (C: 502 pass/1 fail/7 skipped) pada temporary trigger gagal hanya di `test/workflow-deployment.test.js`; trigger dikembalikan sesuai gate approval SSOT. Final heads belum memiliki checks; `actionlint` tidak tersedia.
+- Docker build dan Compose validation: **PASS**. PR #4 dan #5 terbuka. Setelah trigger branch B/C disetujui, GitHub CI B run `44317203508` pada source commit `bd3858654f881180e68f09e63551002608a0f6bd` dan C run `44318008837` pada `ef8b8e17034235124a6f1a00575178b4ffa4e7d1` **PASS**. Setiap push branch B/C menjalankan ulang CI untuk head PR terbaru. `actionlint` tidak tersedia.
 - Tidak menjalankan provider nyata, posting Threads, scheduler, atau migrasi pada produksi. Detail per-test ada di `docs/ndi-requirements-traceability.md`.
 
 ## Migrasi, kompatibilitas, dan rollout
@@ -55,4 +55,4 @@ Fase B membutuhkan PR Phase A lebih dahulu; Fase C bergantung pada struktur dan 
 ## GO / NO-GO
 
 - **GO untuk review PR bertingkat:** PR #4 (B) dan #5 (C) terbuka; source, regression tests dan docs tersedia.
-- **NO-GO merge/deployment saat ini:** final head CI B/C belum memiliki checks dan review state produksi/rollback masih BLOCKED. Merge ke `main` berpotensi auto-deploy dan dilarang tanpa persetujuan eksplisit.
+- **NO-GO merge/deployment:** review state produksi/rollback R-055/R-068 masih BLOCKED dan persetujuan merge terpisah belum diberikan. CI pada source revisions yang tercatat lulus; merge ke `main` berpotensi auto-deploy.

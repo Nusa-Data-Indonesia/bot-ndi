@@ -2,7 +2,7 @@
 
 Sumber requirement: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` (R-001–R-073). Status mengikuti bukti source dan tes untuk branch/PR Phase B/C bertingkat. `VERIFIED` berarti implementasi dan tes lokal yang disebut tersedia; `BLOCKED` berarti ada gate bukti/operasional yang masih harus diselesaikan.
 
-Ringkasan: **71 VERIFIED**, **2 BLOCKED** (R-055: pemeriksaan nilai database produksi; R-068: persetujuan operator atas backup/restore dan rollback schema produksi). T-22 browser E2E PASS; T-30 BLOCKED karena final head B/C tidak memiliki GitHub checks dan workflow update memerlukan persetujuan SSOT.
+Ringkasan: **71 VERIFIED**, **2 BLOCKED** (R-055: pemeriksaan nilai database produksi; R-068: persetujuan operator atas backup/restore dan rollback schema produksi). T-22 browser E2E PASS; T-30 PASS pada source revisions setelah pengguna menyetujui trigger CI branch B/C (PR #4 run `44317203508`, PR #5 run `44318008837`). R-055/R-068 tetap menjadi gate operator produksi.
 
 | ID | Requirement | Phase | Status | File implementasi / target | Test IDs | Bukti / batas | Dependencies | Risk / guardrail |
 |---|---|---|---|---|---|---|---|---|

@@ -51,7 +51,7 @@ Pada branch B/C, tes browser **PASS 4/4** dengan MySQL disposable pada loopback 
 - Website knowledge: manual-only trigger, fixed origin, DNS/pinning/redirect/size/HTML bounds, per-item provenance/version/review, failure preservation, and stale-version conflicts.
 - Dispatcher/provider: slot/idempotency, retry, pause/cancel, unknown reconciliation, mocked Tebar/OpenRouter/Telegram, dan tidak blind replay.
 - Database: migration upgrade/rerun, state retention, concurrent claims, publication timestamp ordering, audit, dan conflict handling.
-- Deployment checks: workflow/source contract, shell syntax, Compose validation, dan release compatibility. Docker image build terakhir BLOCKED karena base `node:22-bookworm-slim` tidak tersedia lokal dan build sengaja tidak menarik image.
+- Deployment checks: workflow/source contract, shell syntax, Compose validation, dan release compatibility. Docker image build lokal **PASS** untuk image verifikasi Phase B/C; image tidak dipush ke registry dan tidak dideploy.
 
 ## Hasil verifikasi branch Phase B/C
 
@@ -60,7 +60,7 @@ Pada branch B/C, tes browser **PASS 4/4** dengan MySQL disposable pada loopback 
 - `npm run test:integration`: 94 passed, 0 failed, 0 skipped; MySQL configuration check terpisah: 1 passed.
 - `test/ndi-migration.mysql.integration.test.js`: 1 passed pada MySQL disposable; publication-resolution MySQL: 10/10 passed.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation, dan Docker build: PASS.
-- Browser E2E: 4/4 PASS. Final B/C PR heads tidak memiliki GitHub checks karena workflow hanya menargetkan `main`; percobaan runs `44310912797`/`44310952126` gagal pada satu assertion workflow yang mengunci filter `push: [main]`. Trigger sementara dikembalikan sesuai gate persetujuan SSOT. `actionlint` tidak terpasang.
+- Browser E2E: 4/4 PASS. Pengguna menyetujui workflow push untuk `main` dan branch B/C, sementara PR filter tetap `main` dan deployment hanya menerima CI sukses pada `main`. PR #4 run `44317203508` pada source commit `bd3858654f881180e68f09e63551002608a0f6bd` dan PR #5 run `44318008837` pada `ef8b8e17034235124a6f1a00575178b4ffa4e7d1` **PASS**. Push terbaru pada branch B/C kembali menjalankan CI untuk head PR. `actionlint` tidak terpasang.
 
 Tes mock tidak memverifikasi permission provider, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Tidak menjalankan posting nyata, mengaktifkan scheduler, atau menghapus volume Docker.
 

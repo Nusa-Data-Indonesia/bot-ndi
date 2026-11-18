@@ -5,7 +5,7 @@ Branch implementasi: `codex/ndi-phase-b` untuk Fase B, kemudian `codex/ndi-phase
 PR Phase A: #3 terbuka, belum merge.
 PR Phase B: #4 terbuka, base `codex/ndi-phase-a`.
 PR Phase C: #5 terbuka, base `codex/ndi-phase-b`.
-GitHub CI: workflow hanya memicu `pull_request`/`push` ke `main`, sehingga final head B/C tidak memiliki checks. Runs percobaan `44310912797`/`44310952126` dari temporary CI trigger gagal hanya pada assertion yang mensyaratkan filter `push: [main]`; trigger sementara dikembalikan mengikuti gate persetujuan SSOT. T-30 BLOCKED sampai branch CI dapat dijalankan dengan persetujuan.
+GitHub CI trigger untuk push ke `main`, `codex/ndi-phase-b`, dan `codex/ndi-phase-c` disetujui pengguna pada 2026-11-18; PR filter tetap `main`, dan deployment tetap dibatasi pada CI sukses di `main`. Run B `44317203508` pada source commit `bd3858654f881180e68f09e63551002608a0f6bd` dan run C `44318008837` pada source commit `ef8b8e17034235124a6f1a00575178b4ffa4e7d1` **PASS**. Push ke branch B/C kini menjalankan CI pada head PR; status setiap head terbaru tersedia pada PR masing-masing. Runner memberi peringatan non-blocking untuk Node 20 dan migrasi `ubuntu-latest`. T-30 **PASS** untuk source code/workflow yang diverifikasi; R-055/R-068 tetap terpisah dan BLOCKED.
 
 ## Otorisasi dan batas keselamatan
 
@@ -19,7 +19,7 @@ GitHub CI: workflow hanya memicu `pull_request`/`push` ke `main`, sehingga final
 - SSOT `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` telah dibaca penuh berulang dalam rentang berurutan tanpa tumpang tindih; pembacaan self-audit terakhir dilakukan sebelum finalisasi.
 - `docs/ndi-requirements-traceability.md` memetakan R-001–R-073 dan T-01–T-30. `docs/BOT-NDI-IMPLEMENTATION-TRACKER.md` memuat seluruh 73 ID dan bukti source/test.
 - Audit runtime, generator, config/knowledge, API/dashboard, scheduler/providers/retry/unknown, auth/session/audit, migrasi, Compose, CI/deployment/rollback ada di `docs/ndi-codebase-audit.md`.
-- PR #3 Phase A adalah baseline; GitHub Actions run `44277798887` lulus. Bukti tersebut bukan hasil CI untuk commit Phase B/C.
+- PR #3 Phase A adalah baseline; GitHub Actions run `44277798887` lulus. PR #4 dan #5 juga memiliki run GitHub Actions PASS pada source commit yang tercatat di atas.
 - R-055 tetap BLOCKED untuk pemeriksaan nilai database produksi efektif; R-068 tetap BLOCKED untuk persetujuan operator atas backup/restore dan rollback schema produksi. Produksi tidak diakses.
 
 ## Phase A
@@ -49,10 +49,10 @@ GitHub CI: workflow hanya memicu `pull_request`/`push` ke `main`, sehingga final
 - Migration 021–023 di MySQL 8.4 disposable: **1/1 PASS**, termasuk upgrade/rerun, legacy retention, strategy gate, website proposal/version/audit/conflict, dan failure preservation.
 - Publication resolution MySQL: **10/10 pass**. `npm run lint`, `npm run typecheck`, `npm run check`, dan Compose config validation **PASS**.
 - Browser E2E **4/4 PASS** dengan Chromium lokal dan MySQL disposable yang hanya bind ke loopback; scheduler/integrasi nonaktif, website API di-intercept, tanpa provider atau real-site fetch.
-- Docker build dan Compose validation **PASS**. `actionlint` tidak tersedia. GitHub Actions runs `44310912797` (B: 492 pass/1 fail/7 skipped) dan `44310952126` (C: 502 pass/1 fail/7 skipped) gagal pada satu assertion `test/workflow-deployment.test.js`; perubahan trigger yang menyebabkan run sudah dikembalikan. Final PR heads tidak memiliki CI run.
+- Docker build dan Compose validation **PASS**. GitHub Actions B run `44317203508` dan C run `44318008837` **PASS** pada source commit yang tercatat di atas. Dua anotasi runner bersifat non-blocking. `actionlint` tidak tersedia; pembaruan dokumentasi/rebase memicu validasi ulang pada head PR berikutnya.
 
 ## Next steps
 
 1. Review PR bertingkat #4 (B) dan #5 (C); jangan merge.
-2. Workflow CI final hanya menargetkan `main`; perubahan trigger untuk branch B/C membutuhkan persetujuan eksplisit sesuai SSOT.
+2. Pastikan checks CI yang terpicu ulang setelah pembaruan dokumentasi/rebase PR #4 dan #5 tetap hijau.
 3. R-055 dan R-068 tetap memerlukan pemeriksaan operator produksi. Tidak ada akses atau migration produksi.

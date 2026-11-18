@@ -2,7 +2,7 @@
 
 Sumber utama: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris, dibaca ulang lengkap pada 2026-11-18. Requirement R-001–R-073 tetap tercatat satu per satu; test matrix T-01–T-30 dipetakan di bawah.
 
-Cakupan: Fase A, B, dan C telah diimplementasikan pada PR #3/#4/#5 bertingkat. Status memakai nilai SSOT `DONE`, `IN_PROGRESS`, `TODO`, atau `BLOCKED`; status `BLOCKED` pada R-055/R-068 adalah gate pemeriksaan operasional produksi, bukan kekurangan implementasi kode. Browser E2E T-22 PASS. T-30 BLOCKED karena final head B/C tidak memiliki GitHub checks; workflow hanya menargetkan `main`, sementara perubahan trigger memerlukan approval SSOT.
+Cakupan: Fase A, B, dan C telah diimplementasikan pada PR #3/#4/#5 bertingkat. Status memakai nilai SSOT `DONE`, `IN_PROGRESS`, `TODO`, atau `BLOCKED`; status `BLOCKED` pada R-055/R-068 adalah gate pemeriksaan operasional produksi, bukan kekurangan implementasi kode. Browser E2E T-22 PASS. Pengguna menyetujui push trigger CI untuk branch B/C; T-30 PASS pada source revisions yang diuji. R-055/R-068 tetap BLOCKED untuk review operator produksi.
 
 | ID | Ringkasan requirement | Implementasi/evidence as-built | Target file/modul | Fase | Status | Tes otomatis yang dipetakan | Bukti verifikasi |
 |---|---|---|---|---|---|---|---|
@@ -113,7 +113,7 @@ Cakupan: Fase A, B, dan C telah diimplementasikan pada PR #3/#4/#5 bertingkat. S
 | T-27 | R-062 | C | PASS | `test/website-knowledge-sync.test.js` verifies DNS/fetch/parse failure records failure without changing approved knowledge or posting state. |
 | T-28 | R-037, R-058 | C | PASS | Tests assert fixed official sync origin and keep it independent from dashboard BASE_URL and the editable CTA; no real-site fetch. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B/C | BLOCKED | Compose validation, lint/typecheck/check, migration tests, deployment shell suite, and local Docker build PASS. Final B/C heads have no GitHub checks because workflow triggers target `main` only. Experimental runs `44310912797` (B: 492 pass, 1 fail, 7 skipped) and `44310952126` (C: 502 pass, 1 fail, 7 skipped) failed only at `test/workflow-deployment.test.js` assertion requiring `push: [main]`; the temporary workflow edit was reverted under the SSOT approval gate. `actionlint` unavailable; Phase-A run `44277798887` is not evidence for these final heads. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B/C | PASS | Compose validation, lint/typecheck/check, migration tests, deployment shell suite, local Docker build, and GitHub Actions pass. PR #4 run `44317203508` passed on source commit `bd3858654f881180e68f09e63551002608a0f6bd`; PR #5 run `44318008837` passed on `ef8b8e17034235124a6f1a00575178b4ffa4e7d1`. The push trigger was explicitly approved; PR filter and main-only deployment gate remain. Runner emitted one Node 20 deprecation warning and one `ubuntu-latest` migration notice. `actionlint` unavailable. R-068 production backup/rollback review remains separately BLOCKED for operator evidence. |
 
 ## Hasil verifikasi aktual
 
@@ -123,12 +123,12 @@ Cakupan: Fase A, B, dan C telah diimplementasikan pada PR #3/#4/#5 bertingkat. S
 - Publication-resolution MySQL: **10/10 passed** (restart, concurrency, audit, unknown fencing, account-switch recovery).
 - Browser E2E with local Chromium and disposable MySQL: **4/4 passed**. Scheduler/provider integrations were disabled; website API was intercepted in-browser, so no real-site fetch or provider call occurred.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose validation, and Docker build: **PASS**.
-- GitHub CI attempts `44310912797`/`44310952126` failed only on the assertion requiring the original `push: [main]` filter; the temporary trigger edit was reverted per SSOT. Final PR heads have no check runs; `actionlint` is unavailable. No real Threads post, scheduler activation, production migration, merge, deployment, or Docker volume deletion occurred.
+- GitHub Actions B/C runs `44317203508` and `44318008837` pass on the source revisions listed in T-30. Each push to branches B/C now triggers CI for the latest PR head; `actionlint` is unavailable. No real Threads post, scheduler activation, production migration, merge, deployment, or Docker volume deletion occurred.
 
 ## Coverage dan gate tersisa
 
 - Requirement IDs: **71 DONE**, **0 TODO/IN_PROGRESS**, **2 BLOCKED** (R-055 dan R-068, menunggu pemeriksaan DB efektif serta persetujuan prosedur backup/restore/rollback produksi oleh operator).
-- Test matrix: T-01–T-29 **PASS** berdasarkan bukti per baris; T-30 **BLOCKED** karena final PR heads belum memiliki checks dan perubahan workflow membutuhkan approval.
+- Test matrix: T-01–T-30 **PASS** berdasarkan bukti per baris dan source revisions pada T-30; R-055/R-068 tetap **BLOCKED** sampai operator meninjau database dan prosedur backup/restore/rollback produksi.
 - Tidak ada provider Threads nyata, scheduler produksi, migrasi produksi, merge, deployment, atau penghapusan volume Docker.
 
 ## Change-group checkpoints
@@ -137,4 +137,4 @@ Cakupan: Fase A, B, dan C telah diimplementasikan pada PR #3/#4/#5 bertingkat. S
 - Phase B menggunakan migration 022 pada PR #4 yang menarget branch A.
 - Phase C menggunakan migration 023 pada PR #5 yang bertumpu di atas Phase B.
 - Rotasi kategori bergantung pada timestamp provider `published_at`; jika data provider tidak tersedia atau ambigu, sistem tetap fail closed.
-- Detail CI yang tertunda pada final head serta gate operator produksi tercatat di `docs/ndi-progress-checkpoint.md` dan `docs/ndi-codebase-audit.md`.
+- Gate CI pada source revisions lulus; head PR terbaru tervalidasi oleh workflow push branch B/C. Gate operator R-055/R-068 tercatat di `docs/ndi-progress-checkpoint.md` dan `docs/ndi-codebase-audit.md`.
