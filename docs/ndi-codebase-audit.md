@@ -74,6 +74,6 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 | Docker image lokal | PASS: `docker build --target runtime --tag bot-ndi:ndi-phase-a-final .`; tidak menjalankan/deploy image |
 | Compose config | PASS: `docker compose config --quiet` dengan nilai test-only untuk variabel wajib; tidak mencetak config ter-resolved |
 | Dependency security audit | PASS: `npm audit --audit-level=high`, 0 vulnerabilities |
-| GitHub CI / actionlint | PR run 44272321299: FAIL pada database integration; penyebab direproduksi dan diperbaiki lokal, urutan CI PASS lokal, GitHub rerun menunggu push. `actionlint` tidak tersedia; rollback produksi tetap perlu review operator |
+| GitHub CI / actionlint | PR run 44272321299 awalnya FAIL pada database integration; fix diuji pada urutan lokal yang sama dan run 44277306178 pada commit `37d92b3` PASS (`Lint, test, and build`). `actionlint` tidak tersedia; rollback produksi tetap perlu review operator |
 
 Semua database test menggunakan container MySQL disposable tanpa mount/volume dengan `/var/lib/mysql` di tmpfs; container dihentikan setelah tes. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Audit ini bukan bukti isi produksi, CI GitHub, atau persetujuan merge/deployment.

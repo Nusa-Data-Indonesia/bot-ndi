@@ -113,7 +113,7 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 | T-27 | R-062 | C | NOT_YET_IMPLEMENTED | Website failure path belum dibuat karena sync belum ada. |
 | T-28 | R-037, R-058 | C | NOT_YET_IMPLEMENTED | Origin sinkronisasi website yang tetap dan alur sync belum dibuat; pemisahan CTA bebas dari dashboard telah diuji T-07. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose (HOST_IP test-only), Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus. PR #3 run `44272321299` awal FAIL pada database integration 92/93; perbaikan replay migration 006 dan isolasi test kini PASS pada urutan lokal yang sama, GitHub rerun menunggu push. `actionlint` tidak tersedia; migration 021 memerlukan jalur deployment manual yang ditinjau operator. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose (HOST_IP test-only), Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus. PR #3 run `44272321299` awal FAIL pada database integration 92/93; perbaikan replay migration 006 dan isolasi test PASS pada urutan lokal yang sama, lalu run `44277306178` pada commit `37d92b3` PASS (`Lint, test, and build`). `actionlint` tidak tersedia; migration 021 tetap memerlukan jalur deployment manual dan review operator. |
 
 ## Hasil verifikasi lokal terakhir
 
@@ -127,7 +127,7 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 - `npm run lint`, `npm run typecheck`, `npm run check`, `bash -n scripts/deploy-homelab.sh`, `docker compose config --quiet` (HOST_IP test-only), `docker build --target runtime`, dan `git diff --check`: **PASS**.
 - `npm audit --audit-level=high`: **PASS**, 0 vulnerabilities.
 - `docker compose config --quiet` dengan variabel test-only dan `docker build --target runtime --tag bot-ndi:ndi-phase-a-final .`: **PASS**.
-- GitHub Actions PR run `44272321299`: **FAIL**, 92/93 pada database integration; lokal sudah mereproduksi, memperbaiki, dan mengulang urutan dengan **PASS**, GitHub rerun menunggu push. `actionlint` tidak tersedia. Tidak ada tes provider nyata/Threads; bukti lokal bukan bukti database produksi atau kompatibilitas rollback produksi.
+- GitHub Actions PR run `44272321299`: **FAIL** awal, 92/93 pada database integration; fix lolos urutan lokal yang sama. GitHub rerun `44277306178` pada commit `37d92b3`: **PASS** (`Lint, test, and build`). `actionlint` tidak tersedia. Tidak ada tes provider nyata/Threads; CI PASS bukan bukti database produksi atau kompatibilitas rollback produksi.
 
 ### Coverage saat ini
 

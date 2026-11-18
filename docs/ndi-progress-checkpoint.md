@@ -6,7 +6,7 @@ Cakupan: implementasi Fase A saja; Fase B/C tetap pekerjaan berikutnya.
 
 ## Status
 
-Implementasi Fase A dikomit sebagai `ddcbfb0` dan dokumentasi akhir sebagai `505cebf`; PR #3 sudah terbuka dari `codex/ndi-phase-a` ke `main`. GitHub run `44272321299` awal gagal pada database integration (92/93). Penyebabnya ditemukan: replay migration 006 menambah interval legacy di atas interval kanonik dan test database meninggalkan knowledge/CTA yang telah diubah. Perbaikan migration/test kini lolos urutan CI lokal pada MySQL disposable; perbaikan belum dipush dan CI GitHub baru masih menunggu. Tidak ada merge, deployment, migrasi production, aktivasi scheduler, atau posting Threads.
+Implementasi Fase A dikomit sebagai `ddcbfb0`, dokumentasi awal sebagai `505cebf`, dan perbaikan CI sebagai `37d92b3`; PR #3 terbuka dari `codex/ndi-phase-a` ke `main`. GitHub run `44272321299` awal gagal pada database integration (92/93). Penyebabnya: replay migration 006 menambah interval legacy di atas interval kanonik dan test database meninggalkan knowledge/CTA yang telah diubah. Perbaikan migration/test lolos urutan CI lokal pada MySQL disposable; GitHub rerun `44277306178` untuk commit `37d92b3` berstatus PASS (`Lint, test, and build`). Tidak ada merge, deployment, migrasi production, aktivasi scheduler, atau posting Threads.
 
 ## Requirement dan audit
 
@@ -36,7 +36,7 @@ Implementasi Fase A dikomit sebagai `ddcbfb0` dan dokumentasi akhir sebagai `505
 - Browser E2E `npm run test:ndi:browser`: PASS — 3/3, Chromium lokal + DB disposable, termasuk login, readiness, accessibility WCAG 2.2 AA, dan UI unknown.
 - Lint, typecheck, JavaScript syntax, shell syntax, `git diff --check`, Compose config dengan HOST_IP test-only, Docker runtime build: PASS.
 - `npm audit --audit-level=high`: PASS, 0 vulnerabilities.
-- GitHub CI awal gagal pada rangkaian DB di atas; perbaikannya lolos lokal dan menunggu push/rerun. `actionlint` tidak tersedia lokal.
+- GitHub CI run `44277306178` pada commit `37d92b3`: PASS (`Lint, test, and build`); run sebelumnya `44272321299` gagal dan sudah diperbaiki. `actionlint` tidak tersedia lokal.
 
 ## Batas, risiko, dan tindak lanjut
 
@@ -49,6 +49,6 @@ Implementasi Fase A dikomit sebagai `ddcbfb0` dan dokumentasi akhir sebagai `505
 
 ## Berikutnya
 
-1. Commit fix migration 006, isolasi database integration test, dan pembaruan bukti/checkpoint.
-2. Push ke PR #3 dan periksa ulang CI GitHub; jangan merge.
-3. Pertahankan NO-GO untuk merge/deployment sampai operator meninjau database produksi dan prosedur migrasi/rollback.
+1. Tinjau diff PR #3 dan rencana migrasi/rollback bersama operator sebelum ada keputusan deployment.
+2. Pertahankan NO-GO untuk merge/deployment sampai persetujuan eksplisit dan review database produksi serta prosedur migrasi/rollback tersedia.
+3. Fase B/C tetap pekerjaan berikutnya; jangan mengaktifkan scheduler atau posting Threads.
