@@ -3,31 +3,34 @@
 const axios = require('axios');
 const { createTebarClient } = require('./providers/tebar');
 const { validId, validModel } = require('./configuration');
+const { assertExternalIntegrationsEnabled } = require('./external-integrations');
 function failure(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
-function createConfigurationValidators({ config, http = axios, tebarFactory = createTebarClient, clock = () => Date.now() }) {
+function createConfigurationValidators({ config, enabled = config?.externalIntegrationsEnabled === true, http = axios, tebarFactory = createTebarClient, clock = () => Date.now() }) {
   if (!config) throw new TypeError('config is required');
   let modelCatalog = null;
   let modelCatalogExpiresAt = 0;
   let modelCatalogRequest = null;
   async function validateAccount({ profileId, accountId }) {
+    assertExternalIntegrationsEnabled(enabled);
     if (!validId(profileId) || !validId(accountId)) throw failure('INVALID_ACCOUNT');
     if (!config.tebar?.apiKey) throw failure('TEBAR_NOT_CONFIGURED', 503);
     let accounts;
-    try { accounts = await tebarFactory({ apiKey: config.tebar.apiKey, profileId, http }).listAccounts(); }
+    try { accounts = await tebarFactory({ apiKey: config.tebar.apiKey, profileId, http, enabled }).listAccounts(); }
     catch (e) { throw failure(e.code === 'unauthorized' ? 'TEBAR_UNAUTHORIZED' : e.code === 'rate_limited' ? 'TEBAR_RATE_LIMITED' : 'TEBAR_UNAVAILABLE', 503); }
     const target = accounts.find(a => a.id === accountId && a.profileId === profileId);
     if (!target || target.platform !== 'threads' || target.status !== 'active' || target.planSuspended !== false) throw failure('ACCOUNT_NOT_AVAILABLE', 422);
     return { id: target.id, profileId: target.profileId, username: target.username, platform: target.platform, status: target.status };
   }
   function requireOpenRouter() {
+    assertExternalIntegrationsEnabled(enabled);
     if (!config.openRouter?.apiKey) throw failure('OPENROUTER_NOT_CONFIGURED', 503);
     return { Authorization: `Bearer ${config.openRouter.apiKey}` };
   }
   async function request(path, { modelLookup = false } = {}) {
     try { return (await http.request({ method:'GET', url:`https://openrouter.ai/api/v1/${path}`, headers:requireOpenRouter(), timeout:15000, maxRedirects:0 })).data; }
     catch (e) {
-      if (e.code === 'OPENROUTER_NOT_CONFIGURED') throw e;
+      if (['OPENROUTER_NOT_CONFIGURED', 'EXTERNAL_INTEGRATIONS_DISABLED'].includes(e.code)) throw e;
       const status=e.response?.status;
       if (status === 404 && modelLookup) throw failure('MODEL_NOT_FOUND', 422);
       if (status === 429) throw failure('OPENROUTER_RATE_LIMITED', 503);

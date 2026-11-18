@@ -17,6 +17,7 @@ test("database-backed runtime starts paused without provider credentials", () =>
   assert.equal(config.automationEnabled, false);
   assert.equal(config.timezone, "Asia/Jakarta");
   assert.equal(config.schedulerEnabled, false);
+  assert.equal(config.externalIntegrationsEnabled, false);
   assert.equal(config.schedulerIntervalSeconds, 60);
   assert.equal(config.trustProxy, false);
   assert.equal(config.tebar.apiKey, undefined);
@@ -79,11 +80,23 @@ test("environment cannot enable automation at startup", () => {
 });
 
 test("scheduler requires an explicit boolean and enforces a bounded polling interval", () => {
-  assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "true" }).schedulerEnabled, true);
+  assert.throws(() => loadEnv({ ...database, SCHEDULER_ENABLED: "true" }), /EXTERNAL_INTEGRATIONS_ENABLED/);
+  assert.equal(loadEnv({ ...database, EXTERNAL_INTEGRATIONS_ENABLED: 'true', SCHEDULER_ENABLED: "true" }).schedulerEnabled, true);
   assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "false", SCHEDULER_INTERVAL_SECONDS: "30" }).schedulerIntervalSeconds, 30);
   for (const extra of [{ SCHEDULER_ENABLED: "yes" }, { SCHEDULER_INTERVAL_SECONDS: "14" }, { SCHEDULER_INTERVAL_SECONDS: "3601" }]) {
     assert.throws(() => loadEnv({ ...database, ...extra }), /Invalid configuration/);
   }
+});
+
+test('external integrations require an explicit boolean and default off regardless of credentials', () => {
+  const credentials = {
+    TEBAR_API_KEY: 'test-tebar-key', TEBAR_PROFILE_ID: 'test-profile', TEBAR_ACCOUNT_ID: 'test-account',
+    OPENROUTER_API_KEY: 'test-openrouter-key', TELEGRAM_BOT_TOKEN: 'test-telegram-token', TELEGRAM_CHAT_ID: '12345',
+  };
+  assert.equal(loadEnv({ ...database, ...credentials }).externalIntegrationsEnabled, false);
+  assert.equal(loadEnv({ ...database, ...credentials, EXTERNAL_INTEGRATIONS_ENABLED: 'false' }).externalIntegrationsEnabled, false);
+  assert.equal(loadEnv({ ...database, ...credentials, EXTERNAL_INTEGRATIONS_ENABLED: 'true' }).externalIntegrationsEnabled, true);
+  assert.throws(() => loadEnv({ ...database, EXTERNAL_INTEGRATIONS_ENABLED: 'yes' }), /EXTERNAL_INTEGRATIONS_ENABLED/);
 });
 
 test("proxy trust can be restricted to a trusted ingress address", () => {

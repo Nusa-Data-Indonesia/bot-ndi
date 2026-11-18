@@ -64,6 +64,9 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   if (env.TRUST_PROXY !== undefined && trustProxy === false && env.TRUST_PROXY !== "false") errors.push("TRUST_PROXY");
   if (env.SCHEDULER_ENABLED !== undefined && !["true", "false"].includes(env.SCHEDULER_ENABLED)) errors.push("SCHEDULER_ENABLED");
   const schedulerEnabled = env.SCHEDULER_ENABLED === "true";
+  if (env.EXTERNAL_INTEGRATIONS_ENABLED !== undefined && !["true", "false"].includes(env.EXTERNAL_INTEGRATIONS_ENABLED)) errors.push("EXTERNAL_INTEGRATIONS_ENABLED");
+  const externalIntegrationsEnabled = env.EXTERNAL_INTEGRATIONS_ENABLED === "true";
+  if (schedulerEnabled && !externalIntegrationsEnabled) errors.push("EXTERNAL_INTEGRATIONS_ENABLED");
   if (env.LEARNING_CAPTURE_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_CAPTURE_ENABLED)) errors.push("LEARNING_CAPTURE_ENABLED");
   if (env.LEARNING_RETENTION_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_RETENTION_ENABLED)) errors.push("LEARNING_RETENTION_ENABLED");
   const learningFlags = {
@@ -112,7 +115,7 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   return {
     nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone,
     approvedCtaHosts: approvedCtaHosts || [],
-    schedulerEnabled, schedulerIntervalSeconds, trustProxy, learningCaptureEnabled: env.LEARNING_CAPTURE_ENABLED === "true", learningRetentionEnabled, learningRetentionDays,
+    schedulerEnabled, externalIntegrationsEnabled, schedulerIntervalSeconds, trustProxy, learningCaptureEnabled: env.LEARNING_CAPTURE_ENABLED === "true", learningRetentionEnabled, learningRetentionDays,
     learningActivationEnabled: env[learningFlags.activation] === 'true',
     learningRetrievalEnabled: env[learningFlags.retrieval] === 'true',
     learningPromptIntegrationEnabled: env[learningFlags.promptIntegration] === 'true',

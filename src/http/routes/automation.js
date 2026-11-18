@@ -5,6 +5,9 @@ const { validateSettings } = require('../../policy');
 function registerAutomationRoutes(app, { repository, services, authenticated, mutation, allowedCtaHosts = [] }) {
   app.post('/api/automation/enable', authenticated, mutation, async (req, res, next) => {
     try {
+      if (services.externalIntegrationsEnabled !== true) {
+        return res.status(503).json({ error: 'EXTERNAL_INTEGRATIONS_DISABLED' });
+      }
       if (services.schedulerStatus?.().enabled !== true || typeof services.triggerScheduler !== 'function') {
         return res.status(503).json({ error: 'SCHEDULER_DISABLED' });
       }

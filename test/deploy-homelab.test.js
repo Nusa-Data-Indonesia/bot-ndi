@@ -10,6 +10,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const deployScript = path.resolve(__dirname, '../scripts/deploy-homelab.sh');
 const runtimeFlags = [
   'SCHEDULER_ENABLED',
+  'EXTERNAL_INTEGRATIONS_ENABLED',
   'LEARNING_CAPTURE_ENABLED',
   'LEARNING_ACTIVATION_ENABLED',
   'LEARNING_RETRIEVAL_ENABLED',
@@ -17,6 +18,15 @@ const runtimeFlags = [
   'LEARNING_SHADOW_ENABLED',
   'LEARNING_RETENTION_ENABLED',
 ];
+const configuredIntegrations = {
+  TEBAR_API_KEY: 'test-tebar-key-must-not-print',
+  TEBAR_PROFILE_ID: 'test-tebar-profile-must-not-print',
+  TEBAR_ACCOUNT_ID: 'test-tebar-account-must-not-print',
+  TEBAR_WEBHOOK_SECRET: 'test-webhook-secret-must-not-print',
+  OPENROUTER_API_KEY: 'test-openrouter-key-must-not-print',
+  TELEGRAM_BOT_TOKEN: 'test-telegram-token-must-not-print',
+  TELEGRAM_CHAT_ID: 'test-telegram-chat-must-not-print',
+};
 
 function runGit(workspace, args) {
   return execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
@@ -35,7 +45,7 @@ function commitSource(fixture, content = 'FROM node:22-bookworm-slim\n') {
   return runGit(fixture.workspace, ['rev-parse', 'HEAD']);
 }
 
-function createFixture(t) {
+function createFixture(t, integrationValues = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-ndi-deploy-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const systemMv = execFileSync('which', ['mv'], { encoding: 'utf8' }).trim();
@@ -59,8 +69,7 @@ function createFixture(t) {
     'TRUST_PROXY=', 'DB_HOST=db', 'DB_PORT=3306', 'DB_NAME=bot_ndi',
     'DB_USER=bot_ndi_app', 'DB_PASSWORD=test-db-secret-must-not-print',
     'DB_ROOT_PASSWORD=test-root-secret-must-not-print', 'DB_POOL_SIZE=5',
-    'TEBAR_API_KEY=', 'TEBAR_PROFILE_ID=', 'TEBAR_ACCOUNT_ID=', 'TEBAR_WEBHOOK_SECRET=',
-    'OPENROUTER_API_KEY=', 'TELEGRAM_BOT_TOKEN=', 'TELEGRAM_CHAT_ID=',
+    ...Object.keys(configuredIntegrations).map(key => `${key}=${integrationValues[key] || ''}`),
     ...runtimeFlags.map(flag => `${flag}=false`),
   ];
   fs.writeFileSync(fixture.envFile, `${envLines.join('\n')}\n`, { mode: 0o600 });
@@ -90,6 +99,7 @@ if [[ "$1" == inspect ]]; then
     *org.opencontainers.image.revision*) sed 's/^bot-ndi://' "$FAKE_ACTIVE_IMAGE_FILE" | cut -c1-40 ;;
     *Config.Env*) printf '%s\\n' \\
       'SCHEDULER_ENABLED=false' \\
+      'EXTERNAL_INTEGRATIONS_ENABLED=false' \\
       'LEARNING_CAPTURE_ENABLED=false' \\
       'LEARNING_ACTIVATION_ENABLED=false' \\
       'LEARNING_RETRIEVAL_ENABLED=false' \\
@@ -230,14 +240,70 @@ test('deployment refuses an environment IP that is not assigned to the LXC', t =
   assert.equal(logText(fixture.dockerLog), '');
 });
 
-test('first bootstrap refuses scheduler or Learning execution before starting the app', t => {
-  const fixture = createFixture(t);
-  fs.appendFileSync(fixture.envFile, 'SCHEDULER_ENABLED=true\n');
+test('first bootstrap refuses scheduler, external integrations or Learning execution before Docker mutations', t => {
+  for (const flag of runtimeFlags) {
+    const fixture = createFixture(t, configuredIntegrations);
+    fs.writeFileSync(fixture.envFile, fs.readFileSync(fixture.envFile, 'utf8').replace(`${flag}=false`, `${flag}=true`));
+    const result = deploy(fixture, fixture.sha);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`initial bootstrap requires ${flag}=false`));
+    assert.doesNotMatch(logText(fixture.dockerLog), /build |up -d|run --rm/);
+    assert.equal(fs.existsSync(path.join(fixture.appDir, 'active')), false);
+  }
+});
+
+test('first bootstrap permits configured external credentials while execution is disabled without disclosing or changing them', t => {
+  const fixture = createFixture(t, configuredIntegrations);
+  const envBefore = fs.readFileSync(fixture.envFile);
+  assert.match(envBefore.toString(), /^EXTERNAL_INTEGRATIONS_ENABLED=false$/m);
   const result = deploy(fixture, fixture.sha);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /initial bootstrap.*disabled/i);
-  assert.equal(logText(fixture.dockerLog).includes('build '), false);
-  assert.equal(fs.existsSync(path.join(fixture.appDir, 'active')), false);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(activeReleaseId(fixture), result.deploymentId);
+  assert.equal(fs.readFileSync(fixture.envFile).equals(envBefore), true);
+  assert.equal(fs.statSync(fixture.envFile).mode & 0o777, 0o600);
+  const output = `${result.stdout}\n${result.stderr}\n${logText(fixture.dockerLog)}\n${logText(fixture.curlLog)}`;
+  for (const value of Object.values(configuredIntegrations)) assert.equal(output.includes(value), false);
+  assert.match(logText(fixture.dockerLog), /up -d --no-deps --wait --wait-timeout 120 app/);
+});
+
+test('first bootstrap accepts an existing environment without the external activation flag and preserves it', t => {
+  const fixture = createFixture(t, configuredIntegrations);
+  fs.writeFileSync(fixture.envFile, fs.readFileSync(fixture.envFile, 'utf8').replace('EXTERNAL_INTEGRATIONS_ENABLED=false\n', ''));
+  const envBefore = fs.readFileSync(fixture.envFile);
+  const result = deploy(fixture, fixture.sha);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(activeReleaseId(fixture), result.deploymentId);
+  assert.equal(fs.readFileSync(fixture.envFile).equals(envBefore), true);
+  const output = `${result.stdout}\n${result.stderr}\n${logText(fixture.dockerLog)}\n${logText(fixture.curlLog)}`;
+  for (const value of Object.values(configuredIntegrations)) assert.equal(output.includes(value), false);
+});
+
+test('first bootstrap refuses invalid or ambiguous external activation entries before Docker mutations', t => {
+  for (const entry of ['', 'true', 'false\nEXTERNAL_INTEGRATIONS_ENABLED=true', 'false\nexport EXTERNAL_INTEGRATIONS_ENABLED=true']) {
+    const fixture = createFixture(t, configuredIntegrations);
+    fs.writeFileSync(fixture.envFile, fs.readFileSync(fixture.envFile, 'utf8').replace('EXTERNAL_INTEGRATIONS_ENABLED=false', `EXTERNAL_INTEGRATIONS_ENABLED=${entry}`));
+    const result = deploy(fixture, fixture.sha);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /initial bootstrap requires EXTERNAL_INTEGRATIONS_ENABLED=false/);
+    assert.doesNotMatch(logText(fixture.dockerLog), /build |up -d|run --rm/);
+    assert.equal(fs.existsSync(path.join(fixture.appDir, 'active')), false);
+  }
+});
+
+test('first bootstrap still requires unambiguous integration environment entries', t => {
+  for (const invalidEntry of ['missing', 'duplicate']) {
+    const fixture = createFixture(t, configuredIntegrations);
+    const environment = fs.readFileSync(fixture.envFile, 'utf8');
+    fs.writeFileSync(fixture.envFile, invalidEntry === 'missing'
+      ? environment.replace(`TEBAR_API_KEY=${configuredIntegrations.TEBAR_API_KEY}\n`, '')
+      : `${environment}TEBAR_API_KEY=\n`);
+    const result = deploy(fixture, fixture.sha);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /one runtime environment entry for TEBAR_API_KEY/);
+    assert.equal(logText(fixture.dockerLog).includes('build '), false);
+    assert.equal(fs.existsSync(path.join(fixture.appDir, 'active')), false);
+    for (const value of Object.values(configuredIntegrations)) assert.equal(`${result.stdout}\n${result.stderr}`.includes(value), false);
+  }
 });
 
 test('fresh deployment builds the exact commit locally, migrates, verifies readiness and revision, and preserves the local environment', t => {

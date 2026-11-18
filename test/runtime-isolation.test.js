@@ -11,6 +11,7 @@ test('runtime Compose names and data volume are isolated for Bot NDI', () => {
   assert.match(compose, /name: bot-ndi_mysql_data/);
   assert.match(compose, /MYSQL_DATABASE: \$\{DB_NAME:\?/);
   assert.match(compose, /MYSQL_USER: \$\{DB_USER:\?/);
+  assert.match(compose, /EXTERNAL_INTEGRATIONS_ENABLED: \$\{EXTERNAL_INTEGRATIONS_ENABLED:-false\}/);
   assert.match(compose, /ports:\n\s+- "\$\{HOST_IP:\?/);
   assert.doesNotMatch(compose, /BOTMERZZ|botmerzz|merzz_mysql_data/i);
   assert.doesNotMatch(compose, /(^|\n)\s+ports:\s*\[?\s*["']?3306:/);
@@ -32,6 +33,7 @@ test('fresh runtime template is secret-free and integrations start disabled', ()
   assert.equal(values.DB_PASSWORD, '');
   assert.equal(values.DB_ROOT_PASSWORD, '');
   assert.equal(values.SCHEDULER_ENABLED, 'false');
+  assert.equal(values.EXTERNAL_INTEGRATIONS_ENABLED, 'false');
   assert.equal(values.TEBAR_API_KEY, '');
   assert.equal(values.OPENROUTER_API_KEY, '');
   assert.equal(values.TELEGRAM_BOT_TOKEN, '');

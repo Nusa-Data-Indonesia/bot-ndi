@@ -14,6 +14,11 @@ const { createLogger } = require('./logger');
 const { createOutboxNotifier } = require('./notifications');
 const { getClickMetric } = require('./insights');
 const { createScheduler } = require('./scheduler');
+const {
+  assertExternalIntegrationsEnabled,
+  canStartPublisherScheduler,
+  isExternalIntegrationsEnabled,
+} = require('./external-integrations');
 
 function providerConnectionStatus(accounts, effective) {
   const target = accounts.find((account) => account.id === effective.accountId && account.profileId === effective.profileId);
@@ -112,8 +117,9 @@ async function main(argv = process.argv.slice(2)) {
           learningStore: shadowLearningStore,
           allowedCtaHosts: config.approvedCtaHosts,
           providerForModel: async (model) => {
+            assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
             if (!config.openRouter.apiKey) throw Object.assign(new Error('OPENROUTER_NOT_CONFIGURED'), { code: 'OPENROUTER_NOT_CONFIGURED', status: 503 });
-            const client = require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model });
+            const client = require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model, enabled: config.externalIntegrationsEnabled });
             /** @param {{system: string, user: string, maxTokens: number, signal?: AbortSignal, temperature?: number, topP?: number}} request */
             const generate = (request) => client.generate({
               ...request,
@@ -130,12 +136,14 @@ async function main(argv = process.argv.slice(2)) {
     };
     const lazyShadowStore = Object.fromEntries(['start','finish','get','list','recordReview','listReviews','consumeStartQuota','acquireAdmission'].map((method) => [method,(...args) => getLearningShadowServices().store[method](...args)]));
     const publisherForProfile = async (profileId) => {
+      assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
       if (!config.tebar.apiKey || typeof profileId !== 'string' || !profileId) throw Object.assign(new Error('TEBAR_NOT_CONFIGURED'), { code: 'not_configured' });
-      return require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId });
+      return require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId, enabled: config.externalIntegrationsEnabled });
     };
     const generatorForModel = async (model) => {
+      assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
       if (!config.openRouter.apiKey) throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' });
-      return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model }).generate;
+      return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model, enabled: config.externalIntegrationsEnabled }).generate;
     };
     if (command === 'admin:create') {
       const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -151,10 +159,16 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (command === 'dispatch') {
+      if (!canStartPublisherScheduler(config)) {
+        stdout.write('{"skipped":"external_integrations_disabled"}\n');
+        await pool.end();
+        return;
+      }
       const effective = await configuration.getActive();
       const publisher = config.tebar.apiKey && effective.profileId ? await publisherForProfile(effective.profileId) : null;
       if (!publisher) { stdout.write('{"skipped":"tebar_not_configured"}\n'); await pool.end(); return; }
-      const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
+      const telegram = config.telegram.botToken && config.telegram.chatId
+        ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: config.externalIntegrationsEnabled }) : null;
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
@@ -175,6 +189,7 @@ async function main(argv = process.argv.slice(2)) {
     if (command !== 'server') throw new Error('UNKNOWN_COMMAND');
     const services = {
       pool,
+      externalIntegrationsEnabled: isExternalIntegrationsEnabled(config),
       learning,
       learningFlags,
       learningAnalytics: {
@@ -183,16 +198,21 @@ async function main(argv = process.argv.slice(2)) {
         effectiveness: (...args) => getLearningAnalytics().effectiveness(...args),
       },
       learningShadowStore: lazyShadowStore,
-      evaluateLearningShadow: async (request) => getLearningShadowServices().execution.evaluate(request),
+      evaluateLearningShadow: async (request) => {
+        assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
+        return getLearningShadowServices().execution.evaluate(request);
+      },
       logger,
       configuration,
       verifyProviderPostForSlot: async ({ profileId, postId }) => {
+        assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
         if (!config.tebar.apiKey) throw Object.assign(new Error('TEBAR_NOT_CONFIGURED'), { code: 'TEBAR_NOT_CONFIGURED' });
         const provider = await publisherForProfile(profileId);
         return provider.getPost(postId);
       },
       getProviderStatus: async () => {
         try {
+          assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
           const effective = await configuration.getActive();
           if (!config.tebar.apiKey || effective.status !== 'ACTIVE') return { connected: false, status: 'not_configured' };
           const tebar = await publisherForProfile(effective.profileId);
@@ -201,11 +221,15 @@ async function main(argv = process.argv.slice(2)) {
         } catch (error) { return { connected: false, status: error.code || 'provider_error' }; }
       },
     };
-    services.configurationValidators = require('./configuration-providers').createConfigurationValidators({ config });
-    services.aiConfigured = Boolean(config.openRouter.apiKey);
-    const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
+    services.configurationValidators = require('./configuration-providers').createConfigurationValidators({
+      config, enabled: config.externalIntegrationsEnabled,
+    });
+    services.aiConfigured = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
+    const telegram = config.externalIntegrationsEnabled === true && config.telegram.botToken && config.telegram.chatId
+      ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: true }) : null;
     const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
     services.reconcileLinkedPublication = async ({ slotId }) => {
+      assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
       const linked = await repository.getPublicationSlot(slotId);
       const scope = linked?.profileId && linked?.accountId ? { profileId: linked.profileId, accountId: linked.accountId } : {};
       await reconcileUnsettled({ repository, publisherForProfile, notifier, logger, counts: { published: 0, failed: 0, unknown: 0 }, slotIds: [slotId], ...scope });
@@ -214,6 +238,7 @@ async function main(argv = process.argv.slice(2)) {
       return { status, pending: !['published', 'failed', 'partial', 'canceled', 'admin_closed_unknown'].includes(status) };
     };
     services.reconcileSwitch = async () => {
+      assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
       const outgoing = await configuration.getActive();
       await reconcileSwitchSlots({ repository, publisherForProfile, notifier, logger,
         profileId: outgoing.profileId, accountId: outgoing.accountId });
@@ -236,6 +261,7 @@ async function main(argv = process.argv.slice(2)) {
     } }) : null;
     services.getClickMetric = async (state) => {
       try {
+        assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
         const effective = await configuration.getActive();
         if (!config.tebar.apiKey || !effective.accountId || !effective.profileId) return { available: false, value: null, reason: 'not_configured' };
         return await getClickMetric({ publisher: await publisherForProfile(effective.profileId), accountId: effective.accountId, timezone: state.settings?.schedule?.timezone || config.timezone });
@@ -250,11 +276,16 @@ async function main(argv = process.argv.slice(2)) {
       services.flushNotifications = () => notifier.flush();
     }
     services.pauseAutomation = async ({ adminId }) => {
+      if (!isExternalIntegrationsEnabled(config)) {
+        await repository.setAutomationEnabled(false, adminId);
+        return { enabled: false, outcomes: [{ status: 'external_integrations_disabled' }] };
+      }
       const effective = await configuration.getActive();
       if (!config.tebar.apiKey || !effective.profileId) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
       return pauseAutomation({ repository, publisher: await publisherForProfile(effective.profileId), notifier, profileId: effective.profileId, accountId: effective.accountId, adminId });
     };
     const dispatchOnce = async () => {
+      if (!canStartPublisherScheduler(config)) return { skipped: 'external_integrations_disabled' };
       const effective = await configuration.getActive();
       if (!config.tebar.apiKey || !effective.profileId) return { skipped: 'tebar_not_configured' };
       const state = await repository.getRuntimeState();
@@ -270,7 +301,7 @@ async function main(argv = process.argv.slice(2)) {
         allowedCtaHosts: config.approvedCtaHosts,
       });
     };
-    if (config.schedulerEnabled) {
+    if (canStartPublisherScheduler(config)) {
       scheduler = createScheduler({
         intervalMs: config.schedulerIntervalSeconds * 1000,
         logger,

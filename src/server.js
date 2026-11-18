@@ -18,6 +18,7 @@ const { registerLearningEvaluationRoutes } = require('./http/routes/learning-eva
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
+  'EXTERNAL_INTEGRATIONS_DISABLED',
   'PUBLICATION_VERIFICATION_UNAVAILABLE', 'PUBLICATION_RECONCILIATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
   'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
 ]);
@@ -26,6 +27,7 @@ const PUBLIC_SERVER_ERRORS = new Set([
  * @typedef {object} ServerServices
  * @property {{ info?: (event: string, metadata?: object) => void, error?: (event: string, metadata?: object) => void }} [logger]
  * @property {{ query: (sql: string) => Promise<unknown> }} [pool]
+ * @property {boolean} [externalIntegrationsEnabled]
  * @property {() => { enabled: boolean }} [schedulerStatus]
  * @property {(code: string) => void | Promise<unknown>} [notify]
  * @typedef {import('express').Request & { correlationId?: string, admin?: { id: number } }} ServerRequest
@@ -132,7 +134,7 @@ function createServer({ config, repository, auth, services = {} } = {}) {
       res.set('Retry-After', String(error.retryAfterSeconds));
     }
     if (status >= 500 && services.logger?.error) services.logger.error('request.failed', { code });
-    if (status >= 500 && services.notify) {
+    if (status >= 500 && services.externalIntegrationsEnabled === true && services.notify) {
       try { await services.notify('system_error'); } catch { /* The outbox preserves retryable notification failures. */ }
     }
     return res.status(status).json({ error: code });

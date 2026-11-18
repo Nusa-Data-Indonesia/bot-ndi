@@ -1,6 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const http=require('node:http');
+const {createHmac}=require('node:crypto');
 const {createServer}=require('../src/server');
 
 function request(server,path,{method='GET',headers={},body}={}){return new Promise((resolve,reject)=>{const address=server.address();const req=http.request({host:'127.0.0.1',port:address.port,path,method,headers:{...(body?{'content-type':'application/json'}:{}),...headers}},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:data}));});req.setTimeout(3000,()=>req.destroy(new Error(`HTTP timeout ${method} ${path}`)));req.on('error',reject);if(body)req.write(body);req.end();});}
@@ -104,7 +105,7 @@ test('automation enable requires scheduler and triggers an immediate durable dis
     setAutomationEnabled:async(enabled)=>{enabledCalls++;assert.equal(enabled,true);return{changed:true,firstPostAt:now.toISOString(),immediate:true};},
   };
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
-  const services={aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;return{claimed:1,published:1};}};
+  const services={externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;return{claimed:1,published:1};}};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
   const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
@@ -117,7 +118,7 @@ test('automation enable requires brand, hashtags, both links, Threads account, a
   const now=new Date();let settings={brand:{name:'Bot NDI',voice:'Santai'},hashtags:['#BotNDI'],trackedLinks:{topup:'https://botndi.test/topup',account:'https://botndi.test/account'}};let connected=true;let aiConfigured=true;let writes=0;
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>({}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
-  const services={aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
+  const services={externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
   const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
@@ -140,7 +141,7 @@ test('automation enable starts immediately even if the previous session posted u
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:new Date()}])),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:true})};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
-  const app=createServer({config,repository,auth,services:{aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;}}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const app=createServer({config,repository,auth,services:{externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;}}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
   assert.equal(response.status,200,response.body);assert.equal(dispatchCalls,1);
@@ -152,10 +153,51 @@ test('automation enable is rejected when recurring scheduler is disabled',async 
   const repository={getRuntimeState:async()=>({settings:{},automationEnabled:false}),setAutomationEnabled:async()=>{writes++;}};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
-  const app=createServer({config,repository,auth,services:{schedulerStatus:()=>({enabled:false})}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const app=createServer({config,repository,auth,services:{externalIntegrationsEnabled:true,schedulerStatus:()=>({enabled:false})}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
   assert.equal(response.status,503);assert.equal(JSON.parse(response.body).error,'SCHEDULER_DISABLED');assert.equal(writes,0);
+});
+
+test('automation, webhook, and error-notification paths stay blocked until external integrations are explicitly enabled',async t=>{
+  let providerChecks=0,enabledWrites=0,dispatchCalls=0,webhookCalls=0,notifications=0,flushCalls=0;
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',externalIntegrationsEnabled:false,schedulerEnabled:true,tebar:{webhookSecret:'test-webhook-secret'}};
+  const repository={
+    getRuntimeState:async()=>{throw Object.assign(new Error('mock database failure'),{code:'MOCK_FAILURE',status:500});},
+    listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],
+    setAutomationEnabled:async()=>{enabledWrites++;return{changed:true};},
+    applyWebhookEvent:async()=>{webhookCalls++;return true;},
+  };
+  const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
+  const services={
+    externalIntegrationsEnabled:false,
+    aiConfigured:true,
+    getProviderStatus:async()=>{providerChecks++;return{connected:true};},
+    schedulerStatus:()=>({enabled:true}),
+    triggerScheduler:async()=>{dispatchCalls++;},
+    notify:async()=>{notifications++;},
+    flushNotifications:async()=>{flushCalls++;},
+  };
+  const server=http.createServer(createServer({config,repository,auth,services}));
+  server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
+
+  const activate=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
+  assert.equal(activate.status,503);assert.deepEqual(JSON.parse(activate.body),{error:'EXTERNAL_INTEGRATIONS_DISABLED'});
+  const webhook=await request(server,'/webhooks/tebar',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  assert.equal(webhook.status,503);assert.deepEqual(JSON.parse(webhook.body),{error:'EXTERNAL_INTEGRATIONS_DISABLED'});
+  const failure=await request(server,'/api/dashboard',{headers:{cookie:headers.cookie}});
+  assert.equal(failure.status,500);assert.equal(notifications,0);
+  assert.equal(providerChecks,0);assert.equal(enabledWrites,0);assert.equal(dispatchCalls,0);assert.equal(webhookCalls,0);assert.equal(flushCalls,0);
+
+  config.externalIntegrationsEnabled=true;services.externalIntegrationsEnabled=true;
+  const webhookBody=Buffer.from(JSON.stringify({id:'evt-enabled',type:'post.failed',profile_id:'profile-1',data:{post_id:'post-1',status:'failed'}}));
+  const timestamp=Math.floor(Date.now()/1000);
+  const signature=createHmac('sha256','test-webhook-secret').update(`${timestamp}.`).update(webhookBody).digest('hex');
+  const enabledWebhook=await request(server,'/webhooks/tebar',{method:'POST',headers:{'content-type':'application/json','Tebar-Signature':`t=${timestamp},v1=${signature}`},body:webhookBody});
+  assert.equal(enabledWebhook.status,200);assert.deepEqual(JSON.parse(enabledWebhook.body),{received:true,duplicate:false});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(webhookCalls,1);assert.equal(flushCalls,1);
 });
 
 test('admin management requires authentication and CSRF, supports create/update, and blocks self-deactivation',async t=>{

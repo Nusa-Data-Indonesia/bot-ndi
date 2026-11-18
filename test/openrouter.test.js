@@ -5,7 +5,7 @@ const { createOpenRouterClient } = require("../src/providers/openrouter");
 
 test('forwards only explicitly configured bounded sampling parameters', async () => {
   const calls = [];
-  const api = createOpenRouterClient({ apiKey: 'key', model: 'model', http: { request: async request => { calls.push(request.data); return { data: { choices: [{ message: { content: 'ok' } }] } }; } } });
+  const api = createOpenRouterClient({ apiKey: 'key', model: 'model', enabled: true, http: { request: async request => { calls.push(request.data); return { data: { choices: [{ message: { content: 'ok' } }] } }; } } });
   await api.generate({ system: 'system', user: 'user', temperature: 0.8, topP: 0.95 });
   await api.generate({ system: 'audit', user: 'user' });
   assert.equal(calls[0].temperature, 0.8);
@@ -17,7 +17,7 @@ test('forwards only explicitly configured bounded sampling parameters', async ()
 
 test('OpenRouter forwards AbortSignal for bounded offline evaluations', async () => {
   const controller = new AbortController(); let received;
-  const api = createOpenRouterClient({ apiKey:'test-key',model:'test/model',http:{request:async(input)=>{
+  const api = createOpenRouterClient({ apiKey:'test-key',model:'test/model',enabled:true,http:{request:async(input)=>{
     received=input.signal;
     return {data:{choices:[{finish_reason:'stop',message:{content:'ok'}}]}};
   }}});
@@ -27,7 +27,7 @@ test('OpenRouter forwards AbortSignal for bounded offline evaluations', async ()
 });
 
 test("generation sends the configured model and prompts and returns only assistant content", async () => {
-  const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "test/model", http: { request: async (request) => {
+  const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "test/model", enabled: true, http: { request: async (request) => {
     assert.equal(request.method, "POST");
     assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(request.headers.Authorization, "Bearer sk-or-secret");
@@ -41,13 +41,13 @@ test("generation sends the configured model and prompts and returns only assista
 
 test("empty or non-text AI responses fail safely instead of creating a fallback", async () => {
   for (const content of [null, "   ", [], { text: "wrong" }]) {
-    const api = createOpenRouterClient({ apiKey: "key", model: "model", http: { request: async () => ({ data: { choices: [{ message: { content } }] } }) } });
+    const api = createOpenRouterClient({ apiKey: "key", model: "model", enabled: true, http: { request: async () => ({ data: { choices: [{ message: { content } }] } }) } });
     await assert.rejects(api.generate({ system: "system", user: "user" }), { code: "invalid_response" });
   }
 });
 
 test("truncated nonempty completions fail safely", async () => {
-  const api = createOpenRouterClient({ apiKey: "key", model: "model", http: { request: async () => ({
+  const api = createOpenRouterClient({ apiKey: "key", model: "model", enabled: true, http: { request: async () => ({
     data: { choices: [{ finish_reason: "length", message: { content: "Caption incomplete" } }] },
   }) } });
   await assert.rejects(api.generate({ system: "system", user: "user" }), { code: "invalid_response" });
@@ -55,7 +55,7 @@ test("truncated nonempty completions fail safely", async () => {
 
 test("OpenRouter transport failures discard request secrets and response bodies", async () => {
   let calls = 0;
-  const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "model", http: { request: async () => {
+  const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "model", enabled: true, http: { request: async () => {
     calls++;
     throw Object.assign(new Error("sk-or-secret"), { response: { status: 429, data: "private response" }, config: { headers: { Authorization: "secret" } } });
   } } });
@@ -69,7 +69,7 @@ test("OpenRouter transport failures discard request secrets and response bodies"
 });
 
 test('OpenRouter records safe HTTP and transport diagnostics without retaining provider error text', async () => {
-  const api = createOpenRouterClient({ apiKey: 'sk-or-secret', model: 'model', http: { request: async () => {
+  const api = createOpenRouterClient({ apiKey: 'sk-or-secret', model: 'model', enabled: true, http: { request: async () => {
     throw Object.assign(new Error('sk-or-secret timeout'), { code: 'ETIMEDOUT', config: { headers: { Authorization: 'sk-or-secret' } } });
   } } });
   await assert.rejects(api.generate({ system: 'system', user: 'user' }), (error) => {

@@ -4,6 +4,7 @@ const express = require('express');
 
 function registerWebhookRoutes(app, { config, repository, services, webhookRateLimit }) {
   app.post('/webhooks/tebar', webhookRateLimit, express.raw({ type: 'application/json', limit: '256kb' }), async (req, res) => {
+    if (config.externalIntegrationsEnabled !== true) return res.status(503).json({ error: 'EXTERNAL_INTEGRATIONS_DISABLED' });
     if (!config.tebar?.webhookSecret) return res.status(404).json({ error: 'NOT_CONFIGURED' });
     try {
       const { handleTebarWebhook } = require('../../webhook');

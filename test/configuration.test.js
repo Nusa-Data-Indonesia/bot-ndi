@@ -6,7 +6,7 @@ const {validId,validModel,snapshot,createConfigurationService}=require('../src/c
 const {createConfigurationValidators}=require('../src/configuration-providers');
 const {createServer}=require('../src/server');
 
-const config={tebar:{apiKey:'test-only'},openRouter:{apiKey:'test-only',generatorSampling:{temperature:0.4}}};
+const config={externalIntegrationsEnabled:true,tebar:{apiKey:'test-only'},openRouter:{apiKey:'test-only',generatorSampling:{temperature:0.4}}};
 function configurationPool({status='ACTIVE',unsettledCount=0,automationEnabled=1}={}){
   const calls=[];
   const connection={
@@ -77,7 +77,7 @@ test('account verification rejects mismatch, non-Threads, inactive and suspended
 });
 test('Tebar adapter preserves unknown suspension state instead of treating it as safe',async()=>{
   const {createTebarClient}=require('../src/providers/tebar');
-  const api=createTebarClient({apiKey:'test-only',profileId:'profile',http:{request:async()=>({data:{data:[
+  const api=createTebarClient({apiKey:'test-only',profileId:'profile',enabled:true,http:{request:async()=>({data:{data:[
     {id:'a',profile_id:'profile',platform:'threads',status:'active'},
     {id:'b',profile_id:'profile',platform:'threads',status:'active',plan_suspended:false},
     {id:'c',profile_id:'profile',platform:'threads',status:'active',plan_suspended:'false'},

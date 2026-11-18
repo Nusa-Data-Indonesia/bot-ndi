@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { assertExternalIntegrationsEnabled } = require('../external-integrations');
 
 const BASE_URL = "https://api.tebar.app/v1";
 const POST_STATES = new Set(["draft", "scheduled", "publishing", "published", "partial", "failed", "canceled"]);
@@ -52,13 +53,14 @@ function normalizePost(data, mutation = false) {
   };
 }
 
-function createTebarClient({ apiKey, profileId, http = axios }) {
+function createTebarClient({ apiKey, profileId, http = axios, enabled = false }) {
   if (typeof apiKey !== "string" || !apiKey.trim()) throw providerError("not_configured");
   const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
   if (profileId) headers["Tebar-Profile"] = profileId;
 
   /** @param {string} method @param {string} path @param {{data?: unknown, params?: Record<string, string | number | boolean>, idempotencyKey?: string}} [options] */
   async function request(method, path, { data, params, idempotencyKey } = {}) {
+    assertExternalIntegrationsEnabled(enabled);
     try {
       const response = await http.request({
         method, url: `${BASE_URL}${path}`, data, params,
