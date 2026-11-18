@@ -1,7 +1,7 @@
 # Audit Codebase Bot NDI
 
 Tanggal: 2026-11-18
-Branch kerja: `codex/ndi-phase-b` berisi Fase B; Fase C dipisahkan sebagai branch bertingkat. Baseline: PR #3 / `codex/ndi-phase-a` (`153da83`).
+Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` (`a9858d2`) dan memuat rantai PR #3/#4/#5 melalui satu merge commit. PR lama tetap terbuka.
 SSOT: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris; seluruh baris dibaca ulang dalam rentang berurutan 1–130, 131–260, dan 261–377.
 
 ## Cakupan dan batas bukti
@@ -10,7 +10,7 @@ SSOT: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris; seluruh baris dibaca ula
 
 Audit menelusuri alur startup, konfigurasi efektif, generator, database/repository, dashboard/API, dispatcher/scheduler, OpenRouter, Tebar, Telegram, retry/unknown, autentikasi/CSRF/audit, migrasi, Compose, CI, deployment, dan dokumen operasional. Pencarian case-insensitive mencakup variasi `Kedai Merzz`, `BotMerzz`, top-up, game, harga/stok/SKU, `gameWhitelist`, `priceMode`, `trackedLinks`, fakta layanan, template, dan learning; hasil legacy diklasifikasikan di bawah sebagai aktif, guardrail penolak, kompatibilitas, histori, atau dihapus dari jalur aktif.
 
-Tidak ada koneksi ke database, `.env`, LXC, provider, scheduler produksi, GitHub Actions produksi, atau aplikasi/infrastruktur BotMerzz terpisah. Isi aktual database, `automation_enabled`, konfigurasi akun, serta slot produksi `ready/publishing/unknown` tetap tidak diketahui. Bukti migrasi berasal dari MySQL 8.4 disposable tanpa volume, bukan salinan data produksi.
+Tidak ada koneksi langsung ke database, `.env`, LXC, provider, scheduler produksi, GitHub Actions produksi, atau aplikasi/infrastruktur BotMerzz terpisah. Pada 2026-11-18 operator melaporkan `integration_config` ACTIVE; Tebar Profile ID, Tebar Account ID, dan OpenRouter Model SET; pending configuration changes NO; configuration/history version 1; `SCHEDULER_ENABLED=false`; `EXTERNAL_INTEGRATIONS_ENABLED=false`; dan Learning feature flags yang diperiksa false. Ini dicatat sebagai evidence operator untuk R-055, bukan query independen. Konektivitas provider, konfigurasi slot `ready/publishing/unknown`, dan perilaku publikasi tidak diuji. Bukti migrasi berasal dari MySQL 8.4 disposable tanpa volume, bukan salinan data produksi.
 
 `origin/main` yang diaudit menjalankan workflow deploy otomatis setelah CI push ke `main` sukses, serta workflow manual untuk operasi terkontrol/rollback. Script deployment memblokir jalur otomatis bila migration atau startup-execution surface berubah dan mengarahkan perubahan tersebut ke jalur manual yang memerlukan review operator. Fase A menambahkan migrasi 021 dan Fase B/C menambahkan 022/023, sehingga setiap branch mengubah schema. Jalur auto-deploy menahan perubahan migration/startup surface; merge tetap NO-GO tanpa persetujuan operator dan prosedur deployment/rollback yang ditinjau.
 
@@ -69,14 +69,13 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 
 | Pemeriksaan | Hasil lokal |
 |---|---|
-| Full unit/integration suite | PASS: `npm test` 485 total, 460 pass, 0 fail, 25 skip |
-| Deployment shell suite | PASS: 30/30 pada sandbox tanpa network; semua filesystem output dibatasi ke scratch |
+| Full unit/integration suite | PASS: `npm test` 510 total, 504 pass, 0 fail, 6 skipped. Enam schema-specific migration tests lulus dalam run terpisah. |
+| Deployment shell suite | PASS: tercakup dalam `npm test`; semua filesystem output dibatasi ke scratch |
 | `npm run test:integration` | PASS: 94/94 pada MySQL disposable; MySQL configuration check terpisah PASS 1/1 |
-| Migrations 021–023 | PASS: `test/ndi-migration.mysql.integration.test.js` 1/1 on disposable MySQL; upgrade/rerun, legacy state, strategy gate, website proposal/version/audit/conflict |
-| Publication resolution MySQL | PASS: 10/10; restart, concurrency, audit, account-switch blockers, no blind replay |
-| Lint/typecheck/check/Compose | PASS: `npm run lint`, `npm run typecheck`, `npm run check`, Compose config dengan env test-only |
+| Disposable MySQL migration suite | PASS: migration 018, Learning upgrade, publication migration 020/fence/legacy closure, dan NDI 021–023 masing-masing 1/1; restart recovery test PASS dengan persistent disposable storage |
+| Lint/typecheck/check/security | PASS: `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit --audit-level=high` (0 vulnerabilities), dan `bash -n scripts/deploy-homelab.sh` |
 | Browser E2E NDI | PASS: 4/4 dengan Chromium lokal dan MySQL disposable pada loopback; scheduler/provider integrations OFF |
-| Docker image build | PASS: production Dockerfile built as local verification tag `bot-ndi-phase-c-verify` |
-| Compose / GitHub CI | Compose config PASS dengan env test-only. Pengguna menyetujui push trigger `main` dan branch B/C; pull-request filter tetap `main`, deployment tetap hanya menerima CI sukses di `main`. PR #4 run `44317203508` dan PR #5 run `44318008837` PASS pada source commit yang tercatat di checkpoint. Runner memberi satu peringatan Node 20 dan satu notice migrasi `ubuntu-latest`, keduanya non-blocking. `actionlint` tidak tersedia. |
+| Docker image build | PASS: production Dockerfile dibangun lokal sebagai tag verifikasi `bot-ndi:ndi-abc-integration` |
+| Compose / GitHub Actions | Compose config PASS dengan env test-only. `actionlint v1.7.12` PASS dengan ignore terarah untuk custom runner label `bot-ndi` dan `concurrency.queue` yang didukung GitHub namun belum didukung schema linter. Workflow regression tests PASS. CI GitHub PR #4 (`44317203508`) dan PR #5 (`44318008837`) PASS pada revisi terdahulu, bukan kandidat integrasi; CI kandidat menunggu PR. |
 
-Semua DB tests menggunakan database disposable dan tidak memakai volume produksi. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Isi production DB dan rollback tetap tidak diketahui. CI pada source revisions lulus; merge/deployment tetap NO-GO sampai review operator R-055/R-068 dan persetujuan merge terpisah tersedia.
+Semua DB tests menggunakan database disposable dan tidak memakai Docker volume; restart recovery memakai data di writable layer container test. Dua percobaan awal (tmpfs restart dan migration tests paralel pada schema yang sama) gagal akibat setup uji, lalu rerun final pada konfigurasi benar lulus. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Operator menerima risiko melewati backup/restore karena aplikasi belum dipakai secara operasional; backup/restore test berstatus NOT_EXECUTED, bukan PASS. Merge/deployment tetap dilarang oleh instruksi tugas ini dan merge ke `main` dapat memicu auto-deployment.

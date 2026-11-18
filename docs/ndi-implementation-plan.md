@@ -1,6 +1,6 @@
 # Rencana dan Hasil Implementasi Bot NDI
 
-Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Fase A berada di PR #3. Fase B dan C dipecah menjadi PR bertingkat: B menarget branch A; C menarget branch B. Tidak ada merge atau deployment dalam pekerjaan ini.
+Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Kandidat `codex/ndi-abc-integration` dibuat dari `origin/main` dan mengintegrasikan sejarah PR #3/#4/#5 dengan satu merge commit tanpa mengubah branch lama. PR lama tetap terbuka sampai cakupan integrasi dibuktikan. Tidak ada merge atau deployment dalam pekerjaan ini.
 
 ## Fase A — Identitas bisnis dan pembersihan logika
 
@@ -39,20 +39,20 @@ Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Fase A berada di PR
 
 ## Verifikasi
 
-- `npm test`: 485 total, 460 pass, 0 fail, 25 skipped; DB-backed tests are listed separately.
-- Deployment shell tests pass within `npm test`. MySQL 8.4 migration 021–023: 1/1 pass; publication-resolution MySQL: 10/10 pass. `npm run test:integration`: 94 pass; MySQL config check: 1 pass.
-- `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation: PASS.
-- Browser E2E: **PASS 4/4** on local Chromium and disposable MySQL; integrations and scheduler disabled.
-- Docker build dan Compose validation: **PASS**. PR #4 dan #5 terbuka. Setelah trigger branch B/C disetujui, GitHub CI B run `44317203508` pada source commit `bd3858654f881180e68f09e63551002608a0f6bd` dan C run `44318008837` pada `ef8b8e17034235124a6f1a00575178b4ffa4e7d1` **PASS**. Setiap push branch B/C menjalankan ulang CI untuk head PR terbaru. `actionlint` tidak tersedia.
+- `npm test`: 510 total, 504 pass, 0 fail, 6 skipped; enam migration tests dijalankan terpisah dan semuanya lulus.
+- `npm run test:integration`: 94 pass; MySQL config check: 1 pass. Dedicated migration tests untuk 018, Learning upgrade, publication resolution 020/fence/legacy closure dan NDI 021–023 masing-masing 1/1 pass pada MySQL 8.4 disposable. Restart test juga pass pada storage disposable yang mempertahankan data.
+- `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit` (0 vulnerabilities), `bash -n`, Compose config, Docker build, Browser E2E 4/4, dan workflow regression checks: PASS.
+- `actionlint v1.7.12` lulus dengan ignore sempit untuk custom self-hosted label `bot-ndi` dan properti `concurrency.queue` yang didukung dokumentasi GitHub namun belum dikenali schema linter. CI PR #4/#5 sebelumnya lulus, tetapi bukan bukti CI untuk kandidat integrasi. CI kandidat menunggu PR.
+- Dua percobaan awal gagal akibat konfigurasi pengujian (MySQL disposable `tmpfs` tidak mempertahankan data setelah restart, serta migration tests berbagi schema saat dijalankan paralel); keduanya lulus setelah setup diperbaiki dan migration tests dijalankan serial pada schema disposable baru.
 - Tidak menjalankan provider nyata, posting Threads, scheduler, atau migrasi pada produksi. Detail per-test ada di `docs/ndi-requirements-traceability.md`.
 
 ## Migrasi, kompatibilitas, dan rollout
 
-Migrations 022/023 hanya menambah tabel/kolom/indeks dan nilai default; tidak ada `DROP`, `DELETE`, `TRUNCATE`, reset database, atau perubahan named volume. Migration integration test menjalankan upgrade dan rerun pada schema disposable. DDL MySQL dapat commit implisit. Rollback binary tidak mengembalikan DDL, knowledge, strategi, proposal, atau audit; image lama mungkin tidak mengenali struktur baru. Karena itu R-068 masih **BLOCKED** sampai operator meninjau backup/restore dan prosedur rollback yang sesuai schema akhir. R-055 juga menunggu pemeriksaan nilai DB efektif produksi. Tidak ada koneksi produksi.
+Migrations 021–023 hanya menambah tabel/kolom/indeks dan nilai default; tidak ada `DROP`, `DELETE`, `TRUNCATE`, reset database, atau perubahan named volume. Migration integration test menjalankan upgrade dan rerun pada schema disposable. DDL MySQL dapat commit implisit. Rollback binary tidak mengembalikan DDL, knowledge, strategi, proposal, atau audit; image lama mungkin tidak mengenali struktur baru. Operator menerima risiko melewati backup/restore karena aplikasi belum digunakan secara operasional; backup/restore test **NOT_EXECUTED** dan tidak dicatat sebagai PASS. Snapshot runtime untuk R-055 diberikan operator dan tidak diverifikasi lewat query langsung. Tidak ada koneksi atau migration produksi.
 
 Fase B membutuhkan PR Phase A lebih dahulu; Fase C bergantung pada struktur dan guardrail B. Tebar harus mengembalikan `published_at` yang sah agar rotasi kategori berlanjut; jika provider tidak menyediakannya, aplikasi berhenti fail-closed. Belum ada verifikasi langsung terhadap capability provider di akun NDI.
 
 ## GO / NO-GO
 
-- **GO untuk review PR bertingkat:** PR #4 (B) dan #5 (C) terbuka; source, regression tests dan docs tersedia.
-- **NO-GO merge/deployment:** review state produksi/rollback R-055/R-068 masih BLOCKED dan persetujuan merge terpisah belum diberikan. CI pada source revisions yang tercatat lulus; merge ke `main` berpotensi auto-deploy.
+- **GO untuk review PR integrasi A+B+C** setelah quality gates lokal lulus; final CI GitHub PR masih harus lulus sebelum kandidat dianggap siap merge. PR #3/#4/#5 tetap terbuka; PR integrasi menggantikannya untuk satu rilis.
+- **NO-GO merge/deployment saat ini** karena instruksi pengguna melarang merge/deployment pada task ini. Merge ke `main` dapat memicu auto-deployment. R-068 risk acceptance tercatat, dan tidak ada klaim backup/restore PASS.

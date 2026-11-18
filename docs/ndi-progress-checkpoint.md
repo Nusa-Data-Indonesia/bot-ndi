@@ -1,16 +1,12 @@
 # Checkpoint Pekerjaan Bot NDI
 
 Diperbarui: 2026-11-18
-Branch implementasi: `codex/ndi-phase-b` untuk Fase B, kemudian `codex/ndi-phase-c` bertumpuk di atasnya.
-PR Phase A: #3 terbuka, belum merge.
-PR Phase B: #4 terbuka, base `codex/ndi-phase-a`.
-PR Phase C: #5 terbuka, base `codex/ndi-phase-b`.
-GitHub CI trigger untuk push ke `main`, `codex/ndi-phase-b`, dan `codex/ndi-phase-c` disetujui pengguna pada 2026-11-18; PR filter tetap `main`, dan deployment tetap dibatasi pada CI sukses di `main`. Run B `44317203508` pada source commit `bd3858654f881180e68f09e63551002608a0f6bd` dan run C `44318008837` pada source commit `ef8b8e17034235124a6f1a00575178b4ffa4e7d1` **PASS**. Push ke branch B/C kini menjalankan CI pada head PR; status setiap head terbaru tersedia pada PR masing-masing. Runner memberi peringatan non-blocking untuk Node 20 dan migrasi `ubuntu-latest`. T-30 **PASS** untuk source code/workflow yang diverifikasi; R-055/R-068 tetap terpisah dan BLOCKED.
+Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2fc7c1006e6548841055426070d6f84b4b`; merge commit memuat PR #3/#4/#5 lengkap satu kali. PR #3/#4/#5 tetap terbuka dan tidak diubah. Quality gates lokal selesai; PR integrasi menuju `main` akan dibuat untuk menjalankan gate GitHub pada kandidat ini.
 
 ## Otorisasi dan batas keselamatan
 
-- Attachment task mengizinkan penyelesaian Fase B dan C, dengan PR terpisah. Tidak ada merge, deployment, aktivasi scheduler, atau posting Threads nyata.
-- Tidak ada akses ke database produksi, `.env`, kredensial produksi, volume Docker, aplikasi/infrastruktur BotMerzz terpisah, atau provider untuk publikasi. Uji DB menggunakan MySQL disposable; integrasi eksternal memakai mock/fake.
+- Task mengizinkan satu PR integrasi Phase A+B+C. Tidak ada merge, deployment, aktivasi scheduler, atau posting Threads nyata.
+- Tidak ada koneksi langsung ke database produksi, `.env`, kredensial, volume Docker, aplikasi/infrastruktur BotMerzz terpisah, atau provider untuk publikasi. Uji DB menggunakan MySQL disposable; integrasi eksternal memakai mock/fake.
 - Worktree Phase A pengguna tetap tidak disentuh, termasuk perubahan `.env.example` dan dokumen SSOT untracked.
 - Instruksi meminta subagent GPT-6 Luna effort max. Model Luna tidak tersedia di opsi delegation tool; tidak ada subagent yang digunakan atau diklaim memakai Luna Max.
 
@@ -19,8 +15,8 @@ GitHub CI trigger untuk push ke `main`, `codex/ndi-phase-b`, dan `codex/ndi-phas
 - SSOT `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` telah dibaca penuh berulang dalam rentang berurutan tanpa tumpang tindih; pembacaan self-audit terakhir dilakukan sebelum finalisasi.
 - `docs/ndi-requirements-traceability.md` memetakan R-001–R-073 dan T-01–T-30. `docs/BOT-NDI-IMPLEMENTATION-TRACKER.md` memuat seluruh 73 ID dan bukti source/test.
 - Audit runtime, generator, config/knowledge, API/dashboard, scheduler/providers/retry/unknown, auth/session/audit, migrasi, Compose, CI/deployment/rollback ada di `docs/ndi-codebase-audit.md`.
-- PR #3 Phase A adalah baseline; GitHub Actions run `44277798887` lulus. PR #4 dan #5 juga memiliki run GitHub Actions PASS pada source commit yang tercatat di atas.
-- R-055 tetap BLOCKED untuk pemeriksaan nilai database produksi efektif; R-068 tetap BLOCKED untuk persetujuan operator atas backup/restore dan rollback schema produksi. Produksi tidak diakses.
+- Operator melaporkan pada 2026-11-18: `integration_config` ACTIVE; Tebar Profile ID/Account ID dan OpenRouter Model SET; pending configuration changes NO; config/history version 1; scheduler/integrasi eksternal OFF; Learning flags yang diperiksa false. Evidence ini dipetakan ke R-055 dan tidak diverifikasi lewat query produksi.
+- Untuk R-068, operator menerima risiko melewati backup/restore karena aplikasi belum digunakan secara operasional. Backup/restore test **NOT_EXECUTED**, bukan PASS. Migration 021–023 diuji pada MySQL disposable; migration produksi tidak dijalankan.
 
 ## Phase A
 
@@ -43,16 +39,23 @@ GitHub CI trigger untuk push ke `main`, `codex/ndi-phase-b`, dan `codex/ndi-phas
 
 ## Verifikasi aktual
 
-- `npm test`: **485 total, 460 pass, 0 fail, 25 skipped**; DB-backed tests are reported separately.
-- `test/deploy-homelab.test.js`: **30 pass, 0 fail**, berjalan terpisah dalam sandbox tanpa network.
-- `npm run test:integration`: **94 pass, 0 fail, 0 skipped**; MySQL configuration check terpisah **1 pass**.
-- Migration 021–023 di MySQL 8.4 disposable: **1/1 PASS**, termasuk upgrade/rerun, legacy retention, strategy gate, website proposal/version/audit/conflict, dan failure preservation.
-- Publication resolution MySQL: **10/10 pass**. `npm run lint`, `npm run typecheck`, `npm run check`, dan Compose config validation **PASS**.
-- Browser E2E **4/4 PASS** dengan Chromium lokal dan MySQL disposable yang hanya bind ke loopback; scheduler/integrasi nonaktif, website API di-intercept, tanpa provider atau real-site fetch.
-- Docker build dan Compose validation **PASS**. GitHub Actions B run `44317203508` dan C run `44318008837` **PASS** pada source commit yang tercatat di atas. Dua anotasi runner bersifat non-blocking. `actionlint` tidak tersedia; pembaruan dokumentasi/rebase memicu validasi ulang pada head PR berikutnya.
+- `npm test`: **510 total, 504 PASS, 0 FAIL, 6 SKIPPED**. Enam migration DB test yang diskip karena memakai schema tersendiri dijalankan terpisah dan seluruhnya PASS.
+- `npm run test:integration`: **94/94 PASS**; MySQL configuration check terpisah **1/1 PASS**. Uji restart database shadow yang bergantung pada restart Docker juga PASS pada MySQL disposable dengan penyimpanan persisten di writable layer container.
+- MySQL 8.4 disposable migration tests: migration 018 recovery, Learning upgrade, publication migration 020, publication fence, legacy publication closure, serta migration NDI 021–023 semuanya **1/1 PASS**. Publication resolution regression tests di suite utama juga PASS.
+- Browser E2E **4/4 PASS** dengan Chromium lokal dan MySQL disposable loopback; scheduler/integrasi nonaktif, website API di-intercept, tanpa provider atau real-site fetch.
+- `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit --audit-level=high` (0 vulnerabilities), `bash -n scripts/deploy-homelab.sh`, Compose config validation, dan Docker runtime build **PASS**.
+- `actionlint v1.7.12` **PASS** dengan pengecualian terarah untuk custom runner label `bot-ndi` dan `concurrency.queue` yang didukung GitHub tetapi belum dikenali schema actionlint. Workflow regression tests juga lulus di `npm test`. GitHub CI pada PR integrasi **belum dijalankan** sebelum PR dibuat.
+- Dua percobaan uji awal gagal karena harness: `tmpfs` menghapus database saat restart, dan beberapa test migration berbagi schema saat dijalankan paralel. Rerun dengan storage disposable persisten dan urutan serial lulus; tidak ada kegagalan final pada source candidate.
+
+### Klasifikasi hasil
+
+- **PASS:** semua quality gates lokal di atas; 73 requirement terpetakan; test matrix lokal T-01–T-30 diperiksa terhadap source/tests.
+- **FAIL:** 0 pada rerun final. Kegagalan harness awal dijelaskan di atas dan tidak dihitung sebagai pass.
+- **SKIPPED:** 6 test migration DB pada `npm test` karena membutuhkan schema disposable khusus; masing-masing lulus saat dijalankan terpisah.
+- **NOT_EXECUTED:** backup/restore (operator risk acceptance), provider connectivity, jalur publikasi nyata/Threads, migrasi produksi, deployment, serta GitHub CI kandidat sebelum PR dibuat.
 
 ## Next steps
 
-1. Review PR bertingkat #4 (B) dan #5 (C); jangan merge.
-2. Pastikan checks CI yang terpicu ulang setelah pembaruan dokumentasi/rebase PR #4 dan #5 tetap hijau.
-3. R-055 dan R-068 tetap memerlukan pemeriksaan operator produksi. Tidak ada akses atau migration produksi.
+1. Push branch dan buat PR integrasi A+B+C ke `main`; PR #3/#4/#5 tetap terbuka sampai cakupan PR integrasi dibuktikan.
+2. Tunggu CI PR integrasi dan jangan merge/deploy tanpa persetujuan eksplisit.
+3. Jangan mengklaim provider connectivity atau backup/restore telah diuji; operator risk acceptance R-068 dan evidence R-055 tercatat di atas.
