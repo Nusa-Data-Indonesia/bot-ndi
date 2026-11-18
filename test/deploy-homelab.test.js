@@ -32,15 +32,47 @@ function runGit(workspace, args) {
   return execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
 }
 
-function commitSource(fixture, content = 'FROM node:22-bookworm-slim\n') {
-  fs.writeFileSync(path.join(fixture.workspace, 'Dockerfile'), content);
-  fs.writeFileSync(path.join(fixture.workspace, 'compose.yaml'), 'name: bot-ndi\nservices: {}\n');
+function commitSource(fixture, content = 'FROM node:22-bookworm-slim\n', {
+  migrationContent = '-- unchanged Bot NDI test migration\n',
+  migratorSource = 'module.exports = { testFixture: true };\n',
+  runtimeContent = 'module.exports = { appFixture: true };\n',
+  cliSource = 'module.exports = { startupFixture: true };\n',
+  databaseSource = 'module.exports = { databaseFixture: true };\n',
+  configSource = 'module.exports = { configFixture: true };\n',
+  packageManifest = '{"name":"bot-ndi-test","version":"1.0.0"}\n',
+  packageLock = '{"name":"bot-ndi-test","version":"1.0.0","lockfileVersion":3,"packages":{}}\n',
+  dockerContent = content,
+  composeContent = 'name: bot-ndi\nservices: {}\n',
+  dockerIgnoreContent = 'node_modules\n.env\n',
+  dockerfileIgnoreContent = '',
+  attributesContent = '',
+} = {}) {
+  const sourceFiles = {
+    Dockerfile: dockerContent,
+    'compose.yaml': composeContent,
+    '.dockerignore': dockerIgnoreContent,
+    'Dockerfile.dockerignore': dockerfileIgnoreContent,
+    '.gitattributes': attributesContent,
+    'package.json': packageManifest,
+    'package-lock.json': packageLock,
+    'migrations/001_test.sql': migrationContent,
+    'src/migrate.js': migratorSource,
+    'src/cli.js': cliSource,
+    'src/db.js': databaseSource,
+    'src/config.js': configSource,
+    'src/feature.js': runtimeContent,
+  };
+  for (const [relativePath, source] of Object.entries(sourceFiles)) {
+    const absolutePath = path.join(fixture.workspace, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, source);
+  }
   if (!fs.existsSync(path.join(fixture.workspace, '.git'))) {
     runGit(fixture.workspace, ['init', '-q']);
     runGit(fixture.workspace, ['config', 'user.name', 'Bot NDI Test']);
     runGit(fixture.workspace, ['config', 'user.email', 'bot-ndi@example.test']);
   }
-  runGit(fixture.workspace, ['add', 'Dockerfile', 'compose.yaml']);
+  runGit(fixture.workspace, ['add', ...Object.keys(sourceFiles)]);
   runGit(fixture.workspace, ['commit', '-q', '-m', 'Test deployment source']);
   return runGit(fixture.workspace, ['rev-parse', 'HEAD']);
 }
@@ -49,6 +81,7 @@ function createFixture(t, integrationValues = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-ndi-deploy-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const systemMv = execFileSync('which', ['mv'], { encoding: 'utf8' }).trim();
+  const systemNode = execFileSync('which', ['node'], { encoding: 'utf8' }).trim();
   const fixture = {
     root,
     workspace: path.join(root, 'workspace'),
@@ -56,6 +89,7 @@ function createFixture(t, integrationValues = {}) {
     bin: path.join(root, 'bin'),
     dockerLog: path.join(root, 'docker.log'),
     curlLog: path.join(root, 'curl.log'),
+    headCheckLog: path.join(root, 'head-check.log'),
     activeImageFile: path.join(root, 'active-image-ref'),
     envFile: path.join(root, 'opt', 'bot-ndi', '.env'),
     deploymentCount: 0,
@@ -95,6 +129,7 @@ fi
 if [[ "$1" == inspect ]]; then
   format="$3"
   case "$format" in
+    *State.Health.Status*) printf '%s\\n' "\${FAKE_DB_HEALTH:-healthy}" ;;
     *Config.Image*) cat "$FAKE_ACTIVE_IMAGE_FILE" ;;
     *org.opencontainers.image.revision*) sed 's/^bot-ndi://' "$FAKE_ACTIVE_IMAGE_FILE" | cut -c1-40 ;;
     *Config.Env*) printf '%s\\n' \\
@@ -123,6 +158,7 @@ if [[ "$1" == compose ]]; then
   args=" $* "
   case "$args" in
     *' config --quiet '*) exit 0 ;;
+    *' ps -q db '*) printf 'fake-database-container\\n'; exit 0 ;;
     *' ps -q app '*) if [[ "\${FAKE_APP_RUNNING:-false}" == true ]] || grep -q 'up -d --no-deps --wait --wait-timeout 120 app' "$DOCKER_LOG"; then printf 'fake-container\\n'; fi; exit 0 ;;
     *' up -d --wait --wait-timeout 120 db '*) exit "\${FAKE_DB_STATUS:-0}" ;;
     *' run --rm --no-deps app npm run migrate '*) exit "\${FAKE_MIGRATE_STATUS:-0}" ;;
@@ -154,6 +190,23 @@ else
   printf '2: eth0    inet 192.0.2.77/24 brd 192.0.2.255 scope global eth0\\n'
 fi
 `);
+  fs.writeFileSync(path.join(fixture.bin, 'node'), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "$GITHUB_WORKSPACE/scripts/check-release-head.js" ]]; then
+  printf '%s\\n' "$COMMIT_SHA" >> "$FAKE_HEAD_CHECK_LOG"
+  check_number="$(awk 'END { print NR }' "$FAKE_HEAD_CHECK_LOG")"
+  main_head_sha="\${FAKE_MAIN_HEAD_SHA:-$COMMIT_SHA}"
+  if [[ -n "\${FAKE_MAIN_HEAD_SHA_AFTER_CHECK:-}" &&
+        "$check_number" -ge "\${FAKE_MAIN_HEAD_CHECK_NUMBER:-1}" ]]; then
+    main_head_sha="$FAKE_MAIN_HEAD_SHA_AFTER_CHECK"
+  fi
+  if [[ "$main_head_sha" != "$COMMIT_SHA" || "\${FAKE_HEAD_CHECK_FAIL_AT:-}" == "$check_number" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+exec ${JSON.stringify(systemNode)} "$@"
+`);
   fs.writeFileSync(path.join(fixture.bin, 'mv'), `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "\${FAKE_ACTIVE_PROMOTION_STATUS:-0}" != 0 ]]; then
@@ -167,6 +220,7 @@ exec ${JSON.stringify(systemMv)} "$@"
   fs.chmodSync(path.join(fixture.bin, 'curl'), 0o755);
   fs.chmodSync(path.join(fixture.bin, 'ip'), 0o755);
   fs.chmodSync(path.join(fixture.bin, 'mv'), 0o755);
+  fs.chmodSync(path.join(fixture.bin, 'node'), 0o755);
   fixture.sha = commitSource(fixture);
   return fixture;
 }
@@ -178,6 +232,7 @@ function deploymentEnv(fixture, sha, extra = {}) {
     PATH: `${fixture.bin}:${process.env.PATH}`,
     DOCKER_LOG: fixture.dockerLog,
     CURL_LOG: fixture.curlLog,
+    FAKE_HEAD_CHECK_LOG: fixture.headCheckLog,
     GITHUB_EVENT_NAME: 'workflow_dispatch',
     GITHUB_REPOSITORY: 'Nusa-Data-Indonesia/bot-ndi',
     GITHUB_REF: 'refs/heads/main',
@@ -185,7 +240,12 @@ function deploymentEnv(fixture, sha, extra = {}) {
     GITHUB_RUN_ID: runId,
     GITHUB_RUN_ATTEMPT: '1',
     GITHUB_WORKSPACE: fixture.workspace,
+    RELEASE_GITHUB_TOKEN: 'mock-release-token',
     BOT_NDI_COMMIT_SHA: sha,
+    BOT_NDI_DEPLOYMENT_MODE: 'manual',
+    BOT_NDI_CI_RUN_ID: '12345',
+    BOT_NDI_CI_RUN_ATTEMPT: '1',
+    BOT_NDI_CI_WORKFLOW_ID: '67',
     BOT_NDI_APP_DIR: fixture.appDir,
     BOT_NDI_TEST_MODE: '1',
     BOT_NDI_HEALTH_RETRIES: '1',
@@ -209,6 +269,20 @@ function deploy(fixture, sha, extra = {}) {
   return result;
 }
 
+function deployAutomatically(fixture, sha, extra = {}) {
+  return deploy(fixture, sha, {
+    BOT_NDI_DEPLOYMENT_MODE: 'automatic',
+    GITHUB_EVENT_NAME: 'workflow_run',
+    GITHUB_SHA: 'f'.repeat(40),
+    BOT_NDI_CI_RUN_ID: '23456',
+    BOT_NDI_CI_RUN_ATTEMPT: '2',
+    BOT_NDI_CI_WORKFLOW_ID: '67',
+    RELEASE_GITHUB_TOKEN: 'mock-release-token',
+    FAKE_MAIN_HEAD_SHA: sha,
+    ...extra,
+  });
+}
+
 function logText(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 }
@@ -227,7 +301,7 @@ test('deployment rejects non-dispatch, non-main, other repository, and mismatche
   ]) {
     const result = deploy(fixture, fixture.sha, extra);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /deployment provenance.*refusing/i);
+    assert.match(result.stderr, /provenance.*refusing/i);
   }
   assert.equal(logText(fixture.dockerLog), '');
 });
@@ -471,7 +545,8 @@ test('failed upgrade migration restarts the previous verified app image', t => {
   assert.equal(first.status, 0, first.stderr || first.stdout);
   const previousSha = fixture.sha;
   const previousReleaseId = first.deploymentId;
-  fixture.sha = commitSource(fixture, 'FROM node:22-bookworm-slim\n# migration failure\n');
+  fixture.sha = commitSource(fixture, undefined, { migrationContent: '-- new schema migration\n' });
+  const failedMigrationSha = fixture.sha;
 
   const failed = deploy(fixture, fixture.sha, {
     FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true', FAKE_MIGRATE_STATUS: '1',
@@ -483,6 +558,316 @@ test('failed upgrade migration restarts the previous verified app image', t => {
   assert.match(commands, new RegExp(`/releases/${previousReleaseId}/release\\.env`));
   assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${previousReleaseId}`);
   assert.equal(fs.readFileSync(fixture.activeImageFile, 'utf8').trim(), `bot-ndi:${previousReleaseId}`);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), previousSha);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-migration-in-progress'), 'utf8').trim(), failedMigrationSha);
+
+  runGit(fixture.workspace, ['reset', '--hard', previousSha]);
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const dockerLogBeforeAutomatic = logText(fixture.dockerLog).length;
+  const automatic = deployAutomatically(fixture, fixture.sha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(automatic.status, 0);
+  assert.match(automatic.stderr, /unverified database migration/i);
+  assert.equal(activeReleaseId(fixture), first.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(dockerLogBeforeAutomatic), /build |stop app|run --rm|up -d/);
+});
+
+test('database startup failure leaves schema state uncertain and blocks later automatic runs', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  const initialSha = fixture.sha;
+
+  fixture.sha = commitSource(fixture, undefined, {
+    composeContent: 'name: bot-ndi\nservices:\n  db:\n    image: mysql:9\n',
+  });
+  const candidateSha = fixture.sha;
+  const failedDatabaseStart = deploy(fixture, candidateSha, {
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+    FAKE_DB_STATUS: '1',
+  });
+  assert.notEqual(failedDatabaseStart.status, 0);
+  assert.match(failedDatabaseStart.stderr, /MySQL did not become healthy/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-migration-in-progress'), 'utf8').trim(), candidateSha);
+
+  runGit(fixture.workspace, ['reset', '--hard', initialSha]);
+  fixture.sha = initialSha;
+  const beforeAutomatic = logText(fixture.dockerLog).length;
+  const automatic = deployAutomatically(fixture, initialSha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.notEqual(automatic.status, 0);
+  assert.match(automatic.stderr, /unverified database migration/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeAutomatic), /build |stop app|run --rm|up -d/);
+});
+
+test('automatic deployment uses the verified CI SHA and deploys only an app-only main update', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  const initialReleaseId = initial.deploymentId;
+  const environmentBeforeAutomatic = fs.readFileSync(fixture.envFile);
+  assert.match(environmentBeforeAutomatic.toString(), /^SCHEDULER_ENABLED=false$/m);
+
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const oldWorkflowSha = 'f'.repeat(40);
+  fs.writeFileSync(fixture.headCheckLog, '');
+  const automatic = deployAutomatically(fixture, fixture.sha, {
+    GITHUB_SHA: oldWorkflowSha,
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.equal(automatic.status, 0, automatic.stderr || automatic.stdout);
+  assert.match(automatic.stdout, new RegExp(`Deployment succeeded for commit ${fixture.sha}`));
+  assert.equal(activeReleaseId(fixture), automatic.deploymentId);
+  const metadata = JSON.parse(fs.readFileSync(path.join(fixture.appDir, 'releases', automatic.deploymentId, 'metadata.json'), 'utf8'));
+  assert.equal(metadata.commit, fixture.sha);
+  assert.equal(metadata.deploymentMode, 'automatic');
+  assert.equal(metadata.ciRunId, '23456');
+  assert.equal(metadata.ciRunAttempt, 2);
+  assert.equal(metadata.ciWorkflowId, 67);
+  assert.notEqual(metadata.commit, oldWorkflowSha);
+  assert.equal(fs.readFileSync(fixture.envFile).equals(environmentBeforeAutomatic), true);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-volume'), 'utf8'), 'volume=bot-ndi_mysql_data\nstate=ready\n');
+  assert.equal(logText(fixture.headCheckLog).trim().split('\n').length, 4);
+  assert.match(logText(fixture.dockerLog), /build .*--build-arg VCS_REF=/);
+  assert.match(logText(fixture.dockerLog), /run --rm --no-deps app npm run migrate/);
+  assert.match(logText(fixture.curlLog), /192\.0\.2\.77:3000\/health\/ready/);
+  assert.doesNotMatch(`${logText(fixture.curlLog)}\n${logText(fixture.dockerLog)}`, /threads\.net|api\.tebar|telegram|down -v|volume rm|image prune/i);
+
+  const previousPointer = fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim();
+  assert.equal(previousPointer, initialReleaseId);
+  const dockerLogBeforeDuplicate = logText(fixture.dockerLog).length;
+  const duplicate = deployAutomatically(fixture, fixture.sha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true', GITHUB_SHA: 'e'.repeat(40),
+  });
+  assert.equal(duplicate.status, 0, duplicate.stderr || duplicate.stdout);
+  assert.match(duplicate.stdout, /already active/i);
+  assert.equal(activeReleaseId(fixture), automatic.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), previousPointer);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(dockerLogBeforeDuplicate), /build |stop app|run --rm|up -d/);
+});
+
+test('automatic deployment refuses migration SQL or execution-surface changes before Docker mutation', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  const active = initial.deploymentId;
+  const activeSha = fixture.sha;
+  const changedSources = [
+    { migrationContent: '-- schema changed\n' },
+    { migratorSource: 'module.exports = { testFixture: false };\n' },
+    { cliSource: 'module.exports = { startupFixture: false };\n' },
+    { databaseSource: 'module.exports = { databaseFixture: false };\n' },
+    { configSource: 'module.exports = { configFixture: false };\n' },
+    { packageManifest: '{"name":"bot-ndi-test","version":"2.0.0"}\n' },
+    { packageLock: '{"name":"bot-ndi-test","version":"2.0.0","lockfileVersion":3,"packages":{}}\n' },
+    { dockerContent: 'FROM node:22-bookworm-slim\n# build input changed\n' },
+    { composeContent: 'name: bot-ndi\nservices: {}\n# startup input changed\n' },
+    { dockerIgnoreContent: 'node_modules\n' },
+    { dockerfileIgnoreContent: 'migrations/\n' },
+    { attributesContent: 'migrations/ export-ignore\n' },
+  ];
+
+  for (const changedSource of changedSources) {
+    runGit(fixture.workspace, ['reset', '--hard', activeSha]);
+    fixture.sha = commitSource(fixture, undefined, changedSource);
+    const dockerLogBeforeAttempt = logText(fixture.dockerLog).length;
+
+    const blocked = deployAutomatically(fixture, fixture.sha, {
+      FAKE_APP_RUNNING: 'true',
+      FAKE_VOLUME_EXISTS: 'true',
+    });
+    assert.notEqual(blocked.status, 0);
+    assert.match(blocked.stderr, /migration or startup execution surface changed/i);
+    assert.equal(activeReleaseId(fixture), active);
+    assert.doesNotMatch(logText(fixture.dockerLog).slice(dockerLogBeforeAttempt), /build |stop app|run --rm|up -d/);
+  }
+});
+
+test('automatic deployment rejects a stale main head before building and recovers if main advances before promotion', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  const active = initial.deploymentId;
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const beforeStaleAttempt = logText(fixture.dockerLog).length;
+  const stale = deployAutomatically(fixture, fixture.sha, {
+    FAKE_MAIN_HEAD_SHA: 'd'.repeat(40),
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /no longer the current main head/i);
+  assert.equal(activeReleaseId(fixture), active);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeStaleAttempt), /build |stop app|run --rm|up -d/);
+
+  fs.writeFileSync(fixture.headCheckLog, '');
+  const beforeLateCheck = logText(fixture.dockerLog).length;
+  const advancedDuringDeployment = deployAutomatically(fixture, fixture.sha, {
+    FAKE_MAIN_HEAD_SHA: fixture.sha,
+    FAKE_HEAD_CHECK_FAIL_AT: '4',
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(advancedDuringDeployment.status, 0);
+  assert.match(advancedDuringDeployment.stderr, /no longer the current main head/i);
+  assert.equal(activeReleaseId(fixture), active);
+  assert.equal(fs.readFileSync(fixture.activeImageFile, 'utf8').trim(), `bot-ndi:${active}`);
+  const recoveryCommands = logText(fixture.dockerLog).slice(beforeLateCheck);
+  assert.match(recoveryCommands, /up -d --no-deps --wait --wait-timeout 120 app/);
+  assert.doesNotMatch(recoveryCommands, /down -v|volume rm|image prune|image rm/i);
+});
+
+test('a newer main commit can deploy after an older automatic run migrates and is superseded before promotion', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+
+  const supersededSha = commitSource(fixture, undefined, {
+    runtimeContent: 'module.exports = { appFixture: "superseded" };\n',
+  });
+  const newerWorktree = path.join(fixture.root, 'newer-worktree');
+  runGit(fixture.workspace, ['worktree', 'add', '--detach', newerWorktree, supersededSha]);
+  fs.writeFileSync(path.join(newerWorktree, 'src', 'feature.js'), 'module.exports = { appFixture: "latest" };\n');
+  runGit(newerWorktree, ['add', 'src/feature.js']);
+  runGit(newerWorktree, ['commit', '-q', '-m', 'Latest app-only update']);
+  const latestSha = runGit(newerWorktree, ['rev-parse', 'HEAD']);
+
+  fs.writeFileSync(fixture.headCheckLog, '');
+  const superseded = deployAutomatically(fixture, supersededSha, {
+    FAKE_MAIN_HEAD_SHA_AFTER_CHECK: latestSha,
+    FAKE_MAIN_HEAD_CHECK_NUMBER: '4',
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(superseded.status, 0);
+  assert.match(superseded.stderr, /no longer the current main head/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), supersededSha);
+  assert.equal(fs.existsSync(path.join(fixture.appDir, 'state', 'database-migration-in-progress')), false);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-tracking'), 'utf8'), 'version=1\n');
+
+  runGit(fixture.workspace, ['checkout', '--detach', latestSha]);
+  fixture.sha = latestSha;
+  fs.writeFileSync(fixture.headCheckLog, '');
+  const latest = deployAutomatically(fixture, latestSha, {
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.equal(latest.status, 0, latest.stderr || latest.stdout);
+  assert.equal(activeReleaseId(fixture), latest.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), latestSha);
+  assert.equal(fs.existsSync(path.join(fixture.appDir, 'state', 'database-migration-in-progress')), false);
+});
+
+test('a managed schema baseline cannot silently fall back to the active app SHA when missing', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-tracking'), 'utf8'), 'version=1\n');
+  fs.rmSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'));
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const before = logText(fixture.dockerLog).length;
+
+  const rejected = deployAutomatically(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /managed database schema baseline is missing/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /build |stop app|run --rm|up -d/);
+});
+
+test('automatic deployment refuses initial bootstrap and any rollback input', t => {
+  const fixture = createFixture(t);
+  const initial = deployAutomatically(fixture, fixture.sha);
+  assert.notEqual(initial.status, 0);
+  assert.match(initial.stderr, /automatic deployment requires an existing verified release/i);
+  assert.doesNotMatch(logText(fixture.dockerLog), /build |up -d|run --rm/);
+
+  const withRollback = deployAutomatically(fixture, fixture.sha, { BOT_NDI_ROLLBACK_SHA: fixture.sha });
+  assert.notEqual(withRollback.status, 0);
+  assert.match(withRollback.stderr, /automatic deployment provenance or rollback input/i);
+  assert.doesNotMatch(logText(fixture.dockerLog), /build |up -d|run --rm/);
+});
+
+test('manual normal deployment refuses a main head that advanced before release promotion', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const before = logText(fixture.dockerLog).length;
+  const staleManual = deploy(fixture, fixture.sha, {
+    FAKE_MAIN_HEAD_SHA: 'b'.repeat(40), FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(staleManual.status, 0);
+  assert.match(staleManual.stderr, /no longer the current main head/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /build |stop app|run --rm|up -d/);
+});
+
+test('active releases refuse pending or missing persistent database volumes before startup', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const marker = path.join(fixture.appDir, 'state', 'database-volume');
+
+  fs.writeFileSync(marker, 'volume=bot-ndi_mysql_data\nstate=pending\n');
+  let before = logText(fixture.dockerLog).length;
+  let rejected = deployAutomatically(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /active release requires a ready persistent MySQL volume marker/i);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /build |stop app|run --rm|up -d/);
+
+  fs.writeFileSync(marker, 'volume=bot-ndi_mysql_data\nstate=ready\n');
+  before = logText(fixture.dockerLog).length;
+  rejected = deployAutomatically(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'false' });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /persistent MySQL volume is missing/i);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /build |stop app|run --rm|up -d/);
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'volume=bot-ndi_mysql_data\nstate=ready\n');
+});
+
+test('malformed previous-release state blocks a schema deployment before build or migration', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  fixture.sha = commitSource(fixture, undefined, { migrationContent: '-- operator-reviewed schema update\n' });
+  fs.mkdirSync(path.join(fixture.appDir, 'previous-release'));
+  const before = logText(fixture.dockerLog).length;
+
+  const rejected = deploy(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /previous-release pointer is not a regular file/i);
+  assert.equal(activeReleaseId(fixture), initial.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /build |stop app|run --rm|up -d/);
+});
+
+test('a delayed older automatic deployment cannot replace the newer verified main release', t => {
+  const fixture = createFixture(t);
+  const initial = deploy(fixture, fixture.sha);
+  assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+  const initialReleaseId = initial.deploymentId;
+
+  const olderSha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const newerSha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: "newer" };\n' });
+  const newer = deployAutomatically(fixture, newerSha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.equal(newer.status, 0, newer.stderr || newer.stdout);
+  assert.equal(activeReleaseId(fixture), newer.deploymentId);
+
+  runGit(fixture.workspace, ['reset', '--hard', olderSha]);
+  fixture.sha = olderSha;
+  const beforeDelayed = logText(fixture.dockerLog).length;
+  const delayedOlder = deployAutomatically(fixture, olderSha, {
+    FAKE_MAIN_HEAD_SHA: newerSha, FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(delayedOlder.status, 0);
+  assert.match(delayedOlder.stderr, /no longer the current main head/i);
+  assert.equal(activeReleaseId(fixture), newer.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), initialReleaseId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeDelayed), /build |stop app|run --rm|up -d/);
 });
 
 test('manual rollback reuses a retained verified local image without rebuilding or migrating', t => {
@@ -492,10 +877,11 @@ test('manual rollback reuses a retained verified local image without rebuilding 
   const previousSha = fixture.sha;
   const previousReleaseId = first.deploymentId;
 
-  fixture.sha = commitSource(fixture, 'FROM node:22-bookworm-slim\n# current release\n');
+  fixture.sha = commitSource(fixture, 'FROM node:22-bookworm-slim\n# current release\n', { migrationContent: '-- schema generation B\n' });
   const current = deploy(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
   assert.equal(current.status, 0, current.stderr || current.stdout);
   const currentSha = fixture.sha;
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), currentSha);
   const logBeforeRollback = logText(fixture.dockerLog).length;
 
   const rollback = deploy(fixture, currentSha, {
@@ -509,10 +895,93 @@ test('manual rollback reuses a retained verified local image without rebuilding 
   assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${previousReleaseId}`);
   assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), current.deploymentId);
   assert.equal(fs.readFileSync(fixture.activeImageFile, 'utf8').trim(), `bot-ndi:${previousReleaseId}`);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), currentSha);
+
+  const beforeQueuedAutomatic = logText(fixture.dockerLog).length;
+  const queuedAutomatic = deployAutomatically(fixture, currentSha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(queuedAutomatic.status, 0);
+  assert.match(queuedAutomatic.stderr, /operator-requested rollback|blocked after an operator rollback/i);
+  assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${previousReleaseId}`);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), current.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeQueuedAutomatic), /build |stop app|run --rm|up -d/);
+
+  fixture.sha = commitSource(fixture, undefined, {
+    dockerContent: 'FROM node:22-bookworm-slim\n# current release\n',
+    runtimeContent: 'module.exports = { appFixture: "reverted schema" };\n',
+  });
+  const beforeSchemaRevert = logText(fixture.dockerLog).length;
+  const schemaRevert = deployAutomatically(fixture, fixture.sha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.notEqual(schemaRevert.status, 0);
+  assert.match(schemaRevert.stderr, /database migration or startup execution surface changed/i);
+  assert.equal(activeReleaseId(fixture), previousReleaseId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'database-schema-baseline'), 'utf8').trim(), currentSha);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeSchemaRevert), /build |stop app|run --rm|up -d/);
 
   const rollbackCommands = logText(fixture.dockerLog).slice(logBeforeRollback);
   assert.match(rollbackCommands, new RegExp(`/releases/${previousReleaseId}/compose\\.yaml up -d --no-deps --wait --wait-timeout 120 app`));
+  assert.match(rollbackCommands, /ps -q db/);
+  assert.doesNotMatch(rollbackCommands, /up -d --wait --wait-timeout 120 db/);
   assert.doesNotMatch(rollbackCommands, /build |npm run migrate|docker pull|image rm|image prune|down -v/i);
+});
+
+test('a rollback dispatched from current main holds that main SHA against a queued automatic rollout', t => {
+  const fixture = createFixture(t);
+  const releaseA = deploy(fixture, fixture.sha);
+  assert.equal(releaseA.status, 0, releaseA.stderr || releaseA.stdout);
+  const shaA = fixture.sha;
+
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: "B" };\n' });
+  const releaseB = deploy(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.equal(releaseB.status, 0, releaseB.stderr || releaseB.stdout);
+
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: "C" };\n' });
+  const shaC = fixture.sha;
+  const rollbackLogOffset = logText(fixture.dockerLog).length;
+  const rollback = deploy(fixture, shaC, {
+    BOT_NDI_ROLLBACK_SHA: shaA,
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+  });
+  assert.equal(rollback.status, 0, rollback.stderr || rollback.stdout);
+  assert.equal(activeReleaseId(fixture), releaseA.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), releaseB.deploymentId);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'state', 'automatic-deployment-hold'), 'utf8').trim(), shaC);
+  const rollbackCommands = logText(fixture.dockerLog).slice(rollbackLogOffset);
+  assert.match(rollbackCommands, /ps -q db/);
+  assert.doesNotMatch(rollbackCommands, /up -d --wait --wait-timeout 120 db/);
+
+  const beforeQueuedAutomatic = logText(fixture.dockerLog).length;
+  const queuedAutomatic = deployAutomatically(fixture, shaC, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.notEqual(queuedAutomatic.status, 0);
+  assert.match(queuedAutomatic.stderr, /operator-requested rollback for this main commit/i);
+  assert.equal(activeReleaseId(fixture), releaseA.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(beforeQueuedAutomatic), /build |stop app|run --rm|up -d/);
+});
+
+test('manual rollback refuses to proceed when the existing database container is unhealthy', t => {
+  const fixture = createFixture(t);
+  const releaseA = deploy(fixture, fixture.sha);
+  assert.equal(releaseA.status, 0, releaseA.stderr || releaseA.stdout);
+  const shaA = fixture.sha;
+  fixture.sha = commitSource(fixture, undefined, { runtimeContent: 'module.exports = { appFixture: false };\n' });
+  const releaseB = deploy(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.equal(releaseB.status, 0, releaseB.stderr || releaseB.stdout);
+  const before = logText(fixture.dockerLog).length;
+
+  const rollback = deploy(fixture, fixture.sha, {
+    BOT_NDI_ROLLBACK_SHA: shaA,
+    FAKE_APP_RUNNING: 'true',
+    FAKE_VOLUME_EXISTS: 'true',
+    FAKE_DB_HEALTH: 'unhealthy',
+  });
+  assert.notEqual(rollback.status, 0);
+  assert.match(rollback.stderr, /healthy existing MySQL container/i);
+  assert.equal(activeReleaseId(fixture), releaseB.deploymentId);
+  assert.doesNotMatch(logText(fixture.dockerLog).slice(before), /stop app| up -d /);
 });
 
 test('manual rollback refuses a malformed SHA before Docker mutations', t => {
