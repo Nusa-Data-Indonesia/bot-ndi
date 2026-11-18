@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadEnv } = require("../src/config");
+const { DEFAULT_NDI_KNOWLEDGE, validateBusinessKnowledge } = require("../src/business-knowledge");
 
 const database = { DB_HOST: "localhost", DB_USER: "test", DB_PASSWORD: "test-only", DB_NAME: "bot_ndi_test" };
 
@@ -30,18 +31,17 @@ test("database-backed runtime starts paused without provider credentials", () =>
   assert.equal(config.db.database, "bot_ndi_test");
 });
 
-test("approved CTA hosts are empty until explicitly configured and reject invalid hostnames", () => {
-  assert.deepEqual(loadEnv(database).approvedCtaHosts, []);
-  assert.deepEqual(loadEnv({ ...database, APPROVED_CTA_HOSTS: "EXAMPLE.ID, shop.example.id,example.id" }).approvedCtaHosts, [
-    "example.id", "shop.example.id",
-  ]);
-  for (const value of ["http://example.id", "example.id/path", "example.id:443", "example.id,,shop.id", "secret-host-value!"]) {
-    assert.throws(() => loadEnv({ ...database, APPROVED_CTA_HOSTS: value }), (error) => {
-      assert.match(error.message, /APPROVED_CTA_HOSTS/);
-      assert.doesNotMatch(error.message, /secret-host-value/);
-      return true;
-    });
-  }
+test("CTA destinations are business knowledge and no hostname allowlist is required at runtime", () => {
+  const config = loadEnv(database);
+  const legacyEnv = loadEnv({ ...database, APPROVED_CTA_HOSTS: "untrusted-old-host.example" });
+  const customKnowledge = validateBusinessKnowledge({ ...DEFAULT_NDI_KNOWLEDGE, ctaUrl: 'https://campaign.example.test/ndi' });
+  assert.equal(Object.hasOwn(config, 'approvedCtaHosts'), false);
+  assert.equal(Object.hasOwn(legacyEnv, 'approvedCtaHosts'), false);
+  assert.equal(config.baseUrl, 'http://localhost:3000');
+  assert.equal(loadEnv({ ...database, BASE_URL: 'https://dashboard.example.test', APPROVED_CTA_HOSTS: 'unused.example.test' }).baseUrl, 'https://dashboard.example.test');
+  assert.equal(customKnowledge.valid, true);
+  assert.equal(customKnowledge.knowledge.ctaUrl, 'https://campaign.example.test/ndi');
+  assert.notEqual(config.baseUrl, customKnowledge.knowledge.ctaUrl, 'dashboard origin must remain separate from the editable marketing CTA');
 });
 
 test("missing database settings are reported without leaking supplied values", () => {

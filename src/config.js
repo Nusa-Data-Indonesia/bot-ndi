@@ -18,17 +18,6 @@ function normalizeTrustedProxies(value) {
   return addresses.join(",");
 }
 
-/** @param {unknown} value @returns {string[] | null} */
-function normalizeApprovedCtaHosts(value) {
-  if (value === undefined) return [];
-  if (typeof value !== "string") return null;
-  if (value.trim() === "") return [];
-  const hosts = value.split(",").map((host) => host.trim().toLowerCase().replace(/\.$/, ""));
-  const validHostname = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
-  if (!hosts.length || hosts.some((host) => !host || host.length > 253 || !validHostname.test(host))) return null;
-  return [...new Set(hosts)];
-}
-
 function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = process.versions.node } = {}) {
   const [major, minor] = nodeVersion.split(".").map(Number);
   if (!Number.isInteger(major) || major < 20 || (major === 20 && minor < 6)) {
@@ -55,8 +44,6 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   };
   const temperature = optionalNumber('OPENROUTER_GENERATOR_TEMPERATURE', 2);
   const topP = optionalNumber('OPENROUTER_GENERATOR_TOP_P', 1);
-  const approvedCtaHosts = normalizeApprovedCtaHosts(env.APPROVED_CTA_HOSTS);
-  if (approvedCtaHosts === null) errors.push('APPROVED_CTA_HOSTS');
   const nodeEnv = env.NODE_ENV || "development";
   if (!["development", "test", "production"].includes(nodeEnv)) errors.push("NODE_ENV");
   const port = integer("PORT", 3000, 1, 65535);
@@ -114,7 +101,6 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   if (errors.length) throw new Error(`Invalid configuration: ${[...new Set(errors)].join(", ")}`);
   return {
     nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone,
-    approvedCtaHosts: approvedCtaHosts || [],
     schedulerEnabled, externalIntegrationsEnabled, schedulerIntervalSeconds, trustProxy, learningCaptureEnabled: env.LEARNING_CAPTURE_ENABLED === "true", learningRetentionEnabled, learningRetentionDays,
     learningActivationEnabled: env[learningFlags.activation] === 'true',
     learningRetrievalEnabled: env[learningFlags.retrieval] === 'true',
@@ -140,4 +126,4 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   };
 }
 
-module.exports = { loadEnv, normalizeApprovedCtaHosts };
+module.exports = { loadEnv };

@@ -1,8 +1,8 @@
 'use strict';
 
-const { validateSettings } = require('../../policy');
+const { validateNdiSettings } = require('../../ndi-settings');
 
-function registerAutomationRoutes(app, { repository, services, authenticated, mutation, allowedCtaHosts = [] }) {
+function registerAutomationRoutes(app, { repository, services, authenticated, mutation }) {
   app.post('/api/automation/enable', authenticated, mutation, async (req, res, next) => {
     try {
       if (services.externalIntegrationsEnabled !== true) {
@@ -12,11 +12,13 @@ function registerAutomationRoutes(app, { repository, services, authenticated, mu
         return res.status(503).json({ error: 'SCHEDULER_DISABLED' });
       }
       const state = await repository.getRuntimeState();
-      const settings = validateSettings(state.settings || {}, { allowedCtaHosts });
+      if (state.contentStrategyReady !== true) {
+        return res.status(409).json({ error: 'CONTENT_STRATEGY_NOT_READY' });
+      }
+      const settings = validateNdiSettings(state.settings || {});
       const provider = services.getProviderStatus ? await services.getProviderStatus() : { connected: false };
-      const complete = settings.valid && Boolean(settings.settings.brand.name && settings.settings.brand.voice)
-        && Boolean(settings.settings.trackedLinks.topup && settings.settings.trackedLinks.account)
-        && settings.settings.hashtags.length > 0
+      const complete = settings.valid && state.businessKnowledgeApproved === true
+        && Boolean(settings.settings.businessKnowledge.companyName && settings.settings.businessKnowledge.ctaUrl)
         && provider.connected === true && services.aiConfigured === true;
       if (!complete) return res.status(409).json({ error: 'ONBOARDING_INCOMPLETE' });
       const activation = await repository.setAutomationEnabled(true, req.admin.id);

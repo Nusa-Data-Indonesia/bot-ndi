@@ -1,28 +1,18 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { validateSettings } = require('./policy');
+const { validateNdiSettings } = require('./ndi-settings');
 
 // Snapshot the normalized policy and creative inputs that can influence a caption.
-/** @param {unknown} settings @param {{allowedCtaHosts?: string[]}} [options] */
-function contentSafetyHash(settings, { allowedCtaHosts = [] } = {}) {
-  const checked = validateSettings(settings, { allowedCtaHosts });
+/** @param {unknown} settings */
+function contentSafetyHash(settings) {
+  const checked = validateNdiSettings(settings);
   if (!checked.valid) return null;
   const contentSettings = { ...checked.settings };
   delete contentSettings.schedule;
+  contentSettings.businessKnowledge = { ...contentSettings.businessKnowledge };
+  delete contentSettings.businessKnowledge.ctaUrl;
   return createHash('sha256').update(JSON.stringify(contentSettings)).digest('hex');
 }
 
-/** @param {unknown} settings @param {{allowedCtaHosts?: string[]}} [options] */
-function legacyContentSafetyHash(settings, { allowedCtaHosts = [] } = {}) {
-  const checked = validateSettings(settings, { allowedCtaHosts });
-  if (!checked.valid) return null;
-  const { timezone, activeDays, activeStart, activeEnd } = checked.settings.schedule;
-  const legacySettings = {
-    ...checked.settings,
-    schedule: { intervalHours: 1, timezone, activeDays, activeStart, activeEnd },
-  };
-  return createHash('sha256').update(JSON.stringify(legacySettings)).digest('hex');
-}
-
-module.exports = { contentSafetyHash, legacyContentSafetyHash };
+module.exports = { contentSafetyHash };

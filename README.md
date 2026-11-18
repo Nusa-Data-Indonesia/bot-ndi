@@ -20,6 +20,14 @@ Buat administrator pertama secara interaktif setelah aplikasi siap:
 docker compose exec -it app npm run admin:create
 ```
 
+## Konten Nusa Data Indonesia
+
+Generator memakai pengetahuan bisnis NDI yang disimpan di MySQL dan harus disetujui admin sebelum konten dibuat. Identitas Nusa Data Indonesia dan batas produk NDI Ticketing mengikuti fakta resmi; layanan, arahan konten, klaim yang diizinkan, hashtag, dan jadwal dapat dikelola melalui dashboard.
+
+Setiap konten baru wajib menyertakan CTA kontekstual dan satu URL HTTPS yang sama persis dengan **Website Resmi / CTA URL**. Nilai awalnya `https://nusadataindonesia.com`; admin boleh menetapkan URL HTTPS lain yang valid. Aplikasi tidak mengunjungi URL CTA. URL dashboard dan situs pemasaran adalah konfigurasi yang berbeda.
+
+Migrasi `021_ndi_business_knowledge.sql` menambah penyimpanan knowledge NDI, mengarsipkan salinan pengaturan lama, dan meminta admin meninjau onboarding kembali. Migrasi mempertahankan baris serta state facts lama, slot, sesi, audit, integrasi, dan status otomasi. Runtime NDI tidak membaca facts lama; slot tanpa snapshot CTA NDI tidak dapat dipublikasikan ulang. Aktivasi dan dispatch tetap tertahan sampai mesin kategori/gaya Fase B tersedia, dengan alasannya terlihat di dashboard.
+
 Perintah meminta email dan password; input password disembunyikan. Tidak ada akun atau kredensial administrator bawaan.
 
 ## CI dan deployment
@@ -45,6 +53,8 @@ npm test
 ```
 
 Tes integrasi MySQL memakai server disposable dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true` dan alamat loopback. Jangan jalankan tes destruktif terhadap database produksi atau volume Compose persisten. Tes provider menggunakan mock; setup dan tes tidak boleh mengirim notifikasi Telegram atau mempublikasikan post Threads.
+
+CI menyiapkan schema disposable khusus untuk menguji upgrade database legacy melalui migrasi `021`, termasuk retensi data dan pencegahan kontaminasi prompt.
 
 Perintah aplikasi lain:
 

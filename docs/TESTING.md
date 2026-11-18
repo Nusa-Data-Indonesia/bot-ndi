@@ -54,13 +54,33 @@ Jangan jalankan `down -v` atau menghapus volume pada project lain.
 
 CI menjalankan test pada GitHub-hosted runner dengan MySQL service disposable yang baru untuk setiap job. CI juga menguji migrasi upgrade/concurrency pada schema terisolasi. Jangan menjalankan tes destructive terhadap MySQL produksi atau volume Compose persisten.
 
+## Upgrade migrasi bisnis NDI
+
+`test/ndi-migration.mysql.integration.test.js` hanya berjalan bila koneksi memakai loopback dan `DB_NAME=bot_ndi_test_ndi_upgrade`, dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true`. Tes menjalankan migrasi historis 001–020 pada schema disposable, menanam representasi legacy yang telah disanitasi, menerapkan migrasi 021, menjalankan ulang pernyataannya, lalu memeriksa arsip, status approval, fakta legacy, flag otomasi, kredensial, dan slot. Tes tidak memakai provider atau posting langsung.
+
+CI membuat schema khusus tersebut di MySQL service disposable. Untuk menjalankan lokal, arahkan environment tes ke MySQL disposable yang hanya tersedia pada `127.0.0.1`, buat schema `bot_ndi_test_ndi_upgrade`, lalu jalankan:
+
+```sh
+NODE_ENV=test ALLOW_DESTRUCTIVE_DB_TESTS=true \
+  DB_HOST=127.0.0.1 DB_PORT=3307 DB_NAME=bot_ndi_test_ndi_upgrade \
+  DB_USER=bot_ndi_test DB_PASSWORD=test-password-only \
+  node --test test/ndi-migration.mysql.integration.test.js
+```
+
+Gunakan kredensial test-only pada instance disposable tanpa volume produksi. Jangan mengarahkan variabel ini ke database `bot_ndi` atau database bersama.
+
+## Browser E2E NDI
+
+`npm run test:ndi:browser` menjalankan Chromium headless terhadap server lokal dan schema kosong `bot_ndi_browser_test` pada MySQL loopback. Test hanya memeriksa checklist readiness Fase B dan UI review slot `unknown`; `SCHEDULER_ENABLED` dan `EXTERNAL_INTEGRATIONS_ENABLED` tetap `false`, dan tidak ada panggilan provider. Arahkan `DB_NAME` ke schema browser test yang disposable dan jalankan dengan `NODE_ENV=test` serta `ALLOW_DESTRUCTIVE_DB_TESTS=true`. Tidak memakai schema `bot_ndi_test` yang juga dipakai integration suite.
+
 ## Cakupan
 
 - Policy dan konfigurasi: timezone, jadwal, guardrails, validasi input, defaults nonaktif, dan kredensial yang tidak ditampilkan.
 - Auth dan HTTP: password hashing, login throttling, session, CSRF, same-origin, safe errors, health checks, dan dashboard.
 - Dispatcher dan provider: slot/idempotency, retry, pause/cancel, rekonsiliasi outcome yang tidak diketahui, serta adapter mock Tebar/OpenRouter/Telegram.
 - Database: migrasi, state durable, klaim serentak, notifikasi, webhook deduplication, dan pemulihan setelah koneksi/pool restart.
-- Deployment: verified `workflow_run` deployment, manual dispatch/rollback, local image build, runner guardrails, migration compatibility guard, health checks, persistent-volume safety, and immutable release SHA.
+- Browser: dashboard NDI, readiness gate kategori/gaya, label legacy yang hilang, serta unknown-slot evidence/recovery.
+- Deployment: workflow_run terverifikasi setelah CI push ke main, workflow_dispatch untuk operasi manual/rollback, guard kompatibilitas migrasi, image build lokal, pemeriksaan health/volume, dan SHA release yang tidak berubah.
 
 Tes mock tidak memverifikasi permission provider, gateway, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Jalankan validasi provider dan ingress hanya pada environment yang memang disiapkan operator; jangan mengirim post atau notifikasi operasional sebagai bagian dari tes otomatis.
 

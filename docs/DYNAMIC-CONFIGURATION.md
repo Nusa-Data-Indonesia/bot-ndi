@@ -23,6 +23,12 @@ The account/profile pair changes atomically. All app instances use the database 
 
 New slots snapshot profile ID, account ID, and configuration version when created; model and model version are captured when generation begins. The exact outbound body and idempotency key are persisted before sending. Status checks and webhook matching use the slot's original account and profile, including after a change. Existing slots without an unambiguous profile/account snapshot are not assigned the current target automatically.
 
+## NDI business knowledge and CTA
+
+Migration `021_ndi_business_knowledge.sql` adds an admin-managed NDI knowledge document, its explicit approval state, archived copies of the prior business settings/knowledge, and a `slots.cta_url` snapshot. It does not change the automation flag, automation session, schedule interval, integration credentials, or slot status. Existing legacy knowledge is not implicitly approved; the dashboard must save and approve the NDI knowledge before automation can start.
+
+The admin's **Website Resmi / CTA URL** is an HTTPS URL and may use any valid hostname. The marketing CTA is separate from the fixed NDI website-sync origin planned for a later phase. Saving a CTA never fetches or probes its destination. A slot captures the CTA in the same transaction that claims it for generation; all retries and the persisted publish payload use that snapshot. A later edit applies to newly claimed slots only. The final caption must end with the exact slot URL, pass the NDI content/claim checks, and remain within 500 characters immediately before publication. Legacy ready slots without a valid NDI safety hash and CTA snapshot fail closed; `publishing` and `unknown` slots retain their existing status and reconciliation path.
+
 ## Change a model or roll back
 
 Use the searchable catalog in Integrasi, or enter an OpenRouter model ID manually. The backend queries OpenRouter metadata and checks text input/output and parameters required by the application, including `temperature` and `top_p` when configured. A successful metadata check does not guarantee future provider availability, account permissions, credit, or semantic-audit quality. If validation is unavailable or fails, the previous model remains active. See [OpenRouter model metadata](https://openrouter.ai/docs/api/api-reference/models/get-model).

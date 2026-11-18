@@ -3,7 +3,8 @@
 const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
-const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
+const { contentSafetyHash } = require('./content-safety');
+const { validateNdiCaption } = require('./content-validation');
 const { formatSlotNotice, formatDailyReport } = require('./telegram-format');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 
@@ -17,7 +18,7 @@ const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 /** @typedef {{status: string, text?: string, reason?: string, diagnosticCode?: string, attempts?: number, pillar?: string, factBearing?: boolean, factIds?: string[], factVersions?: Array<{id: string, updatedAt?: string | null}>, providerFailure?: {provider: string, code?: string, httpStatus?: number | null, transportCode?: string | null, timedOut?: boolean}}} GeneratedContent */
 /** @typedef {{kind: string, post?: ProviderPost, status?: string, patch?: {status?: string, providerStatus?: string, providerPostId?: string | null, errorCode?: string | null, completedAt?: Date | string | null}, [key: string]: unknown}} PublicationCallbackOutcome */
 /** @typedef {{repository: Repository, publisher?: Publisher | null, publisherForProfile?: (profileId: string) => Promise<Publisher>, notifier?: Notifier | null, counts?: ReconcileCounts, logger?: Logger, slotIds?: string[], profileId?: string | null, accountId?: string | null, correlationId?: string, clock?: () => Date}} ReconcileOptions */
-/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, allowedCtaHosts?: string[], maxPublishAttempts?: number}} RunDispatcherOptions */
+/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, maxPublishAttempts?: number}} RunDispatcherOptions */
 /** @typedef {{repository: Repository, publisherForProfile?: (profileId: string) => Promise<Publisher>, profileId?: string, accountId?: string, notifier?: Notifier | null, logger?: Logger, clock?: () => Date}} ReconcileSwitchOptions */
 /** @typedef {{repository: Repository, publisher: Publisher, notifier?: Notifier | null, profileId?: string, accountId?: string, adminId?: string | number | null}} PauseAutomationOptions */
 
@@ -262,7 +263,6 @@ async function runDispatcher({
   contentGenerator,
   generatorForModel,
   logger,
-  allowedCtaHosts = [],
   correlationId = randomUUID(),
   maxPublishAttempts = 2,
 } = {}) {
@@ -281,7 +281,7 @@ async function runDispatcher({
   }
   result.reconciled = await reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts: result, logger, ...targetScope, correlationId, clock });
   await maybeSendDailySummary({ repository, notifier, now, counts: result });
-  if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
+  if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId || state.contentStrategyReady !== true) return result;
 
   // A provider request with no definitive state blocks new posts until an
   // operator can reconcile it. This is deliberately fail-closed.
@@ -308,11 +308,12 @@ async function runDispatcher({
     }
   }
 
+  /** @type {{ timezone?: unknown, [key: string]: unknown }} */
   let schedule = { ...(state.settings?.schedule || {}) };
   if (typeof repository.ensureNextDueSlot === 'function') {
     const planned = await repository.ensureNextDueSlot({
       now,
-      timezone: schedule.timezone || timezone,
+      timezone: typeof schedule.timezone === 'string' ? schedule.timezone : timezone,
       schedule,
     });
     if (planned?.skippedCount > 0) {
@@ -337,14 +338,22 @@ async function runDispatcher({
   try { logger?.info('publication.claimed', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId }); } catch { /* Observability must not change publishing. */ }
 
   const claimedState = await repository.getRuntimeState();
-  if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId
+  if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId || claimedState.contentStrategyReady !== true
     || !slot.automationSessionId || claimedState.settings?.automationSessionId !== slot.automationSessionId) {
-    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: clock().toISOString() });
-    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+    const code = claimedState?.contentStrategyReady === false ? 'content_strategy_not_ready' : 'automation_paused';
+    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: code, completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code } });
     result.skipped++;
     return result;
   }
   state = claimedState;
+  if (state.businessKnowledgeApproved !== true || !slot.ctaUrl) {
+    await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'business_knowledge_review_required', attempts: 0 } });
+    await sendNotice(notifier, 'generation_failed', { repository, slotId: slot.id, diagnosticCode: 'business_knowledge_review_required' });
+    result.failed++;
+    return result;
+  }
   if (publisherForProfile) {
     if (!slot.profileId || !slot.accountId || slot.profileId !== state.profileId || slot.accountId !== state.accountId) {
       await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'target_snapshot_missing', completedAt: clock().toISOString() });
@@ -406,8 +415,14 @@ async function runDispatcher({
     return result;
   } else if (!generated) {
     try {
+      const slotSettings = {
+        ...state.settings,
+        businessKnowledge: { ...state.settings.businessKnowledge, ctaUrl: slot.ctaUrl },
+      };
       generated = await content({
         ...state,
+        businessKnowledgeApproved: true,
+        settings: slotSettings,
         now,
         history: state.history || [],
         facts: state.facts || [],
@@ -454,9 +469,18 @@ async function runDispatcher({
     return result;
   }
 
-  const currentSafetyHash = contentSafetyHash(state.settings, { allowedCtaHosts });
-  const previousSafetyHash = legacyContentSafetyHash(state.settings, { allowedCtaHosts });
-  if ((isPrepared && (!slot.contentSafetyHash || ![currentSafetyHash, previousSafetyHash].includes(slot.contentSafetyHash)))
+  if (!isPrepared) payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
+  const currentSafetyHash = contentSafetyHash(state.settings);
+  const ndiSettings = /** @type {{ hashtags?: string[], businessKnowledge?: { forbiddenClaims?: string[] } }} */ (state.settings || {});
+  const finalCaptionCheck = validateNdiCaption(payload?.content, {
+    ctaUrl: slot.ctaUrl,
+    hashtags: ndiSettings.hashtags || [],
+    forbiddenClaims: ndiSettings.businessKnowledge?.forbiddenClaims || [],
+  });
+  const targetIsValid = Array.isArray(payload?.targets) && payload.targets.length === 1
+    && payload.targets[0]?.account_id === state.accountId;
+  if (!finalCaptionCheck.valid || !targetIsValid
+      || (isPrepared && (!slot.contentSafetyHash || slot.contentSafetyHash !== currentSafetyHash))
       || (generated.factBearing === true && (!Array.isArray(generated.factIds) || !generated.factIds.length
       || !Array.isArray(generated.factVersions) || generated.factIds.some((id) => !generated.factVersions.some((version) => version?.id === id))))) {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
@@ -468,7 +492,6 @@ async function runDispatcher({
 
   if (!isPrepared) {
     idempotencyKey = makeIdempotencyKey(slot);
-    payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
     const saved = await repository.savePreparedSlot(slot.id, {
       requestPayload: payload,
       idempotencyKey,
@@ -477,7 +500,7 @@ async function runDispatcher({
       factBearing: generated.factBearing === true,
       factIds: generated.factIds || [],
       ...(generated.factVersions ? { factVersions: generated.factVersions } : {}),
-      contentSafetyHash: contentSafetyHash(state.settings, { allowedCtaHosts }),
+      contentSafetyHash: contentSafetyHash(state.settings),
     });
     if (saved === false) {
       await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });

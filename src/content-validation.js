@@ -4,10 +4,14 @@ const { normalizeHashtags } = require('./policy');
 
 const TAG = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
 const URL = /(?:https?:\/\/|www\.)[^\s<>]+|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}(?:\/[^\s<>]*)?/giu;
+const LEGACY_NDI_CONTAMINATION = /\b(?:kedai\s*merzz|merzz|botmerzz|top[\s-]?up|mobile\s+legends?|mlbb|free\s*fire|pubg(?:\s+mobile)?|diamonds?|game(?:s|r|rs|ing)?|gaming|permainan|akun\s+game|roblox|valorant|genshin(?:\s+impact)?|dota(?:\s+2)?|honor\s+of\s+kings?)\b/iu;
+const INVITATION = /\b(?:mari|yuk|silakan|hubungi|diskusikan|bicarakan|ceritakan|kenali|jelajahi|eksplorasi|pertimbangkan|konsultasikan|pelajari|berbincang)\b/iu;
+const BUSINESS_CONTEXT = /\b(?:kebutuhan|solusi|layanan|sistem|data|teknologi|dashboard|api|integrasi|perangkat lunak|bisnis|tim|organisasi)\b/iu;
+const HYPOTHETICAL_SCENARIO = /\b(?:misalkan|misalnya sebuah (?:tim|perusahaan|organisasi)|andaikan|bayangkan|hipotetis|fiktif|skenario simulasi|hypothetical|fictional company|suppose|imagine)\b/iu;
 
 function words(text) {
   return text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(URL, ' ').replace(TAG, ' ').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    .replace(URL, ' ').replace(TAG, ' ').toLocaleLowerCase('id').match(/[\p{L}\p{N}]+/gu) || [];
 }
 
 function repetitive(text, recentCaptions) {
@@ -34,55 +38,46 @@ function repetitive(text, recentCaptions) {
 
 // Deterministic checks complement the independent semantic review; they do not
 // establish that every claim in natural language is supported.
-function validateFullCaption(text, context = {}) {
+function validateNdiCaption(text, context = {}) {
   if (typeof text !== 'string' || !text.trim()) return { valid: false, errors: ['EMPTY_CAPTION'] };
   const errors = [];
   if ([...text].length > 500) errors.push('CAPTION_TOO_LONG');
   const normalized = text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '');
-  const lower = normalized.toLowerCase();
-  for (const claim of context.forbiddenClaims || []) {
-    if (typeof claim === 'string' && claim.trim() && lower.includes(claim.normalize('NFKC').toLowerCase().trim())) errors.push('FORBIDDEN_CLAIM');
+  const lower = normalized.toLocaleLowerCase('id');
+  const ctaUrl = context.ctaUrl;
+  if (typeof ctaUrl !== 'string' || !ctaUrl) errors.push('INVALID_CONFIGURED_CTA');
+  const lines = normalized.trimEnd().split(/\r?\n/u);
+  if (lines.at(-1) !== ctaUrl) errors.push('CTA_URL_NOT_FINAL');
+  let urlCount = 0;
+  for (const match of normalized.matchAll(URL)) {
+    const candidate = match[0].replace(/[.,!?;:)]+$/u, '');
+    urlCount++;
+    if (candidate !== ctaUrl) errors.push('UNAPPROVED_LINK');
   }
+  if (urlCount !== 1) errors.push(urlCount ? 'DUPLICATE_LINK' : 'MISSING_REQUIRED_LINK');
+  const body = lines.slice(0, -1).join('\n');
+  const bodyWithoutTags = body.replace(TAG, ' ').trim();
+  if (!INVITATION.test(bodyWithoutTags) || !BUSINESS_CONTEXT.test(bodyWithoutTags)) errors.push('MISSING_CONTEXTUAL_INVITATION');
+  if (HYPOTHETICAL_SCENARIO.test(bodyWithoutTags) && !/^Ilustrasi:\s/iu.test(bodyWithoutTags)) errors.push('UNLABELED_HYPOTHETICAL_SCENARIO');
+  if (LEGACY_NDI_CONTAMINATION.test(body)) errors.push('LEGACY_BUSINESS_CONTENT');
+  for (const claim of context.forbiddenClaims || []) {
+    if (typeof claim === 'string' && claim.trim() && lower.includes(claim.normalize('NFKC').toLocaleLowerCase('id'))) errors.push('FORBIDDEN_CLAIM');
+  }
+  if (/\d|[$€£¥]\s*\d|\b(?:rp|idr|usd|eur|dollar|rupiah)\s*\d|\b(?:satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh|seratus|seribu|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:klien|pelanggan|pengguna|transaksi|tahun|bulan|minggu|hari|persen)\b/iu.test(body)) errors.push('UNSUPPORTED_NUMERIC_CLAIM');
+  if (/\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/iu.test(body) || /(?:\+?\d[\d ()-]{7,}\d)/u.test(body)) errors.push('POSSIBLE_PERSONAL_INFORMATION');
   const hashtags = normalizeHashtags(context.hashtags ?? []);
   if (!hashtags) errors.push('INVALID_HASHTAGS');
-  const allowed = new Set((hashtags || []).map((tag) => tag.slice(1).toLowerCase()));
-  let checked = normalized;
-  const trackedLink = typeof context.trackedLink === 'string' ? context.trackedLink : '';
-  if (/\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/iu.test(checked)) errors.push('POSSIBLE_PERSONAL_INFORMATION');
-  // Match whole URLs: removing a trusted prefix first would allow a malicious suffix.
-  let approvedLinkCount = 0;
-  checked = checked.replace(URL, (match) => {
-    const url = match.replace(/[.,!?;:)]+$/u, '');
-    if (trackedLink && url === trackedLink.normalize('NFKC')) approvedLinkCount++;
-    else errors.push('UNAPPROVED_LINK');
-    return ' ';
-  });
-  if (approvedLinkCount > 1) errors.push('DUPLICATE_LINK');
-  if (context.requireConfigured && approvedLinkCount !== 1) errors.push('MISSING_REQUIRED_LINK');
-  const seenTags = new Set();
-  for (const match of checked.matchAll(TAG)) {
-    const key = match[1].normalize('NFKC').toLowerCase();
+  const allowed = new Set((hashtags || []).map((tag) => tag.slice(1).toLocaleLowerCase('id')));
+  const seen = new Set();
+  for (const match of body.matchAll(TAG)) {
+    const key = match[1].normalize('NFKC').toLocaleLowerCase('id');
     if (!allowed.has(key)) errors.push('UNAPPROVED_HASHTAG');
-    seenTags.add(key);
+    if (seen.has(key)) errors.push('DUPLICATE_HASHTAG');
+    seen.add(key);
   }
-  if (context.requireConfigured && (!allowed.size || [...allowed].some((tag) => !seenTags.has(tag)))) errors.push('MISSING_REQUIRED_HASHTAGS');
-  checked = checked.replace(TAG, ' ');
-  if (/(?:\+?\d[\d ()-]{7,}\d)/u.test(checked)) errors.push('POSSIBLE_PERSONAL_INFORMATION');
-  // Numerals must appear in an eligible fact. Semantic verification additionally
-  // checks their meaning and association with the correct product.
-  const numbers = checked.match(/\p{N}+(?:[.,]\p{N}+)?/gu) || [];
-  const permittedValues = (Array.isArray(context.facts) ? context.facts : []).flatMap((fact) =>
-    [fact.game, fact.price, fact.denomination, fact.availability, ...(Array.isArray(fact.attributes) ? fact.attributes : [])]);
-  permittedValues.push(...(Array.isArray(context.gameWhitelist) ? context.gameWhitelist : []));
-  const sourceNumbers = permittedValues.join(' ').normalize('NFKC').match(/\p{N}+(?:[.,]\p{N}+)?/gu) || [];
-  if (numbers.some((number) => !sourceNumbers.includes(number))) errors.push('UNAPPROVED_NUMBER');
-  // Detect common direct price statements missing a currency. Other phrasings
-  // still require semantic review to determine whether a number is a price.
-  const directPrices = checked.matchAll(/\b(?:harga|biaya|tarif|price|cost|bayaran|berharga)\s*(?:(?:adalah|sekitar|cuma|hanya|mulai|dari)\s*)?[:=]?\s*\d+(?:[.,]\d+)?(?![\d.,])(?:\s*(?:idr|rp)\b)?/giu);
-  if ([...directPrices].some((match) => !/\b(?:idr|rp)\b/iu.test(match[0]))) errors.push('PRICE_MISSING_CURRENCY');
-  if (/[$€£¥]/u.test(checked)) errors.push('UNAPPROVED_CURRENCY');
-  if (repetitive(normalized, Array.isArray(context.recentCaptions) ? context.recentCaptions : [])) errors.push('REPETITIVE_CAPTION');
+  if ([...allowed].some((tag) => !seen.has(tag))) errors.push('MISSING_REQUIRED_HASHTAGS');
+  if (repetitive(bodyWithoutTags, Array.isArray(context.recentCaptions) ? context.recentCaptions : [])) errors.push('REPETITIVE_CAPTION');
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateFullCaption };
+module.exports = { validateNdiCaption };

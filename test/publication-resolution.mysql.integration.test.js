@@ -11,6 +11,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
   const { runMigrations } = require('../src/migrate');
   const { createRepository } = require('../src/repository');
   const { createConfigurationService } = require('../src/configuration');
+  const { DEFAULT_NDI_KNOWLEDGE } = require('../src/business-knowledge');
   const pool = createPool(loadEnv());
   const created = [];
   let actorId;
@@ -31,7 +32,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
     const [[database]] = await pool.query('SELECT DATABASE() AS name,VERSION() AS version');
     assert.equal(database.name, 'bot_ndi_test'); assert.match(database.version, /^8\.4\./);
     await runMigrations(pool);
-    [[savedSettings]] = await pool.query('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
+    [[savedSettings]] = await pool.query('SELECT settings_json,knowledge_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
     [[savedConfig]] = await pool.query('SELECT * FROM integration_config WHERE id=1');
     actorEmail = `resolution-${randomUUID()}@example.test`;
     const [admin] = await pool.execute('INSERT INTO admins (email,password_hash) VALUES (?,?)', [actorEmail, 'test-only-password-hash']);
@@ -241,14 +242,13 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
 
       const readySettings = {
         schedule: { intervalMinutes: 60, timezone: 'Asia/Jakarta' },
-        brand: { name: 'Toko Contoh', voice: 'Santai' },
-        guardrails: { approved: true, forbiddenClaims: [], approvedClaims: [] },
+        hashtags: [],
         targetAccountId: otherAccountId,
         profileId,
         onboardingComplete: true,
       };
-      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [
-        JSON.stringify(readySettings), JSON.stringify({ brand: readySettings.brand, guardrails: readySettings.guardrails }),
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE WHERE id=1', [
+        JSON.stringify(readySettings), JSON.stringify({}), JSON.stringify(DEFAULT_NDI_KNOWLEDGE),
       ]);
       const enabledAutomation = await repo.setAutomationEnabled(true, actorId);
       dispatchSessionIds.push(enabledAutomation.sessionId);
@@ -265,18 +265,19 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
             return { id: 'mock-new-account-post', status: 'published', targets: [{ accountId: otherAccountId, platform: 'threads', status: 'published' }] };
           },
         },
-        content: async () => ({ status: 'ready', text: 'Mock post after deliberate reactivation.', pillar: 'topup', factBearing: false, factIds: [] }),
+        content: async ({ settings }) => ({
+          status: 'ready',
+          text: `NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n${settings.businessKnowledge.ctaUrl}`,
+          pillar: 'ndi', factBearing: false, factIds: [], factVersions: [],
+        }),
         clock: dispatchNow,
       });
-      assert.equal(published.published, 1);
-      assert.equal(sent.length, 1, 'one scheduled slot must produce exactly one mocked provider request');
-      assert.deepEqual(sent[0].payload.targets, [{ account_id: otherAccountId }]);
-      assert.notEqual(sent[0].payload.targets[0].account_id, accountId);
-      const [[newSlot]] = await pool.execute('SELECT id,status,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE automation_session_id=? AND status=\'published\'', [enabledAutomation.sessionId]);
-      assert.ok(newSlot);
-      assert.equal(newSlot.tebar_profile_id, profileId);
-      assert.equal(newSlot.tebar_account_id, otherAccountId);
-      assert.equal(JSON.parse(typeof newSlot.request_payload === 'string' ? newSlot.request_payload : JSON.stringify(newSlot.request_payload)).targets[0].account_id, otherAccountId);
+      assert.equal((await repo.getRuntimeState()).contentStrategyReady, false);
+      assert.equal(published.claimed, 0, 'Phase A must retain the stored automation state but fail closed before claiming a slot');
+      assert.equal(published.published, 0);
+      assert.deepEqual(sent, [], 'the Phase B readiness gate must block even a mocked provider request');
+      const [[newSlotCount]] = await pool.execute('SELECT COUNT(*) AS count FROM slots WHERE automation_session_id=? AND status=\'published\'', [enabledAutomation.sessionId]);
+      assert.equal(Number(newSlotCount.count), 0);
     });
   } finally {
     for (const sessionId of dispatchSessionIds) {
@@ -299,7 +300,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       await pool.execute('DELETE FROM generation_slot_claims WHERE slot_id=?', [id]);
       await pool.execute('DELETE FROM slots WHERE id=?', [id]);
     }
-    if (savedSettings) await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1', [typeof savedSettings.settings_json === 'string' ? savedSettings.settings_json : JSON.stringify(savedSettings.settings_json), typeof savedSettings.knowledge_json === 'string' ? savedSettings.knowledge_json : JSON.stringify(savedSettings.knowledge_json), savedSettings.automation_enabled]);
+    if (savedSettings) await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=?,automation_enabled=? WHERE id=1', [typeof savedSettings.settings_json === 'string' ? savedSettings.settings_json : JSON.stringify(savedSettings.settings_json), typeof savedSettings.knowledge_json === 'string' ? savedSettings.knowledge_json : JSON.stringify(savedSettings.knowledge_json), typeof savedSettings.business_knowledge_json === 'string' ? savedSettings.business_knowledge_json : JSON.stringify(savedSettings.business_knowledge_json), savedSettings.business_knowledge_approved, savedSettings.automation_enabled]);
     if (savedConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1', [savedConfig.version,savedConfig.profile_id,savedConfig.account_id,savedConfig.model,savedConfig.status,savedConfig.pending_profile_id,savedConfig.pending_account_id,savedConfig.pending_model,savedConfig.updated_by]);
     else if (savedSettings) await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.end();

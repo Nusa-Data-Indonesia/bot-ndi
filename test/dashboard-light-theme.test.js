@@ -30,9 +30,11 @@ test('all dashboard areas use scoped light theme surfaces and the sidebar stays 
   for (const token of tokens) assert.ok(css.includes(token), `missing theme token ${token}`);
   assert.match(css, /:root\{color-scheme:light;/);
   assert.doesNotMatch(css, /body,body \*\{color:#fff!important\}/, 'dashboard text should not be forced white globally');
-  for (const panel of ['dashboard', 'content', 'templates', 'schedule', 'facts', 'activity', 'ai', 'integrations', 'admins']) {
+  for (const panel of ['dashboard', 'content', 'schedule', 'facts', 'activity', 'ai', 'integrations', 'admins']) {
     assert.ok(html.includes(`id="tab-${panel}"`), `missing ${panel} dashboard page`);
   }
+  assert.doesNotMatch(html, /data-tab="templates"|id="tab-templates"/, 'legacy template UI is not active in the NDI dashboard');
+  assert.doesNotMatch(html, /data-tab="learning"|id="tab-learning"/, 'legacy learning UI is not active in the NDI dashboard');
   assert.match(css, /#app-view \.dashboard-main,\s*#app-view \.dashboard-main \*/);
   assert.match(css, /#app-view \.dashboard-main \.metric,[\s\S]*?#app-view \.dashboard-main \.onboarding-summary\{[^}]*background:var\(--color-surface\)/);
   assert.match(css, /#app-view \.sidebar\{background:var\(--color-sidebar\)/);

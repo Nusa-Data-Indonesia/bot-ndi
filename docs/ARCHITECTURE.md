@@ -10,12 +10,14 @@ The dispatcher calls the same application services. OpenRouter generates content
 
 ## Boundaries
 
-- Domain policy validates schedule settings with a one-minute minimum cadence, fact freshness, content length, currency claims, approved account attributes, and onboarding state. Legacy active-day/hour settings do not gate publishing. It has no network or database code.
-- Content service selects a pillar and eligible fresh facts for OFF/ON/MIXED mode, builds a context from brand direction and recent captions, and requests a full Malaysian Malay caption. Deterministic checks validate length, links, hashtags, possible personal information, approved numbers, forbidden phrases and repetition. A separate model call reviews factual support, language and tone; malformed, rejected or unavailable reviews fail closed. One retry is allowed. These existing product and language defaults require NDI review before publishing is enabled.
-- Semantic review is probabilistic and uses the configured generation model. It cannot guarantee factual accuracy or detect all personal information; operators should review representative output before enabling publishing. Time-sensitive product information must originate in fresh approved facts.
+- Domain policy validates schedule settings, a one-minute minimum cadence, and hashtags. Legacy game, price, product-fact, and active-window policy is not part of the active NDI path.
+- The repository loads NDI business knowledge from a dedicated MySQL column. New generation requires an explicitly approved knowledge record. The context contains NDI identity, services, ticketing status, approved/forbidden claims, CTA, configured hashtags, and up to five recent published NDI captions. Legacy product facts, old templates, and non-NDI captions are excluded.
+- The content service always generates for the `ndi` pillar in Indonesian. Deterministic checks require one configured HTTPS URL at the end, configured hashtags, an NDI-contextual invitation, factual-number and personal-information safeguards, legacy-content rejection, a 500-character limit, and repetition checks. An independent model audit must pass; malformed, rejected, or unavailable audits fail closed. Generation retries remain bounded at two attempts.
+- The CTA defaults to `https://nusadataindonesia.com` and can be any syntactically valid HTTPS URL configured by an admin. The application does not fetch the CTA. The marketing destination is independent from the dashboard origin and the future website-sync origin.
+- Semantic review is probabilistic and cannot guarantee factual accuracy. Admins should review knowledge and representative output before enabling automation. NDI Ticketing must remain described as an in-development invitation-only customer-support triage pilot, not an event-ticketing product available for general purchase.
 - Tebar adapter owns API URLs, Bearer authentication, account/status/list/cancel/insights requests, idempotency headers, and response normalization. Other modules use provider-neutral methods.
 - Telegram adapter sends bounded notifications and daily summaries. It redacts secrets and never exposes provider response bodies.
-- Repository owns SQL, migrations, transactions, durable slot state, sessions, facts, settings, audit events, and webhook deduplication.
+- Repository owns SQL, migrations, transactions, durable slot state, sessions, NDI knowledge, settings, audit events, and webhook deduplication. Legacy `service_facts` and `templates` rows remain stored for history but have no active route or generation path.
 - Dispatcher claims one due slot at a time, generates and validates content, persists the exact request and idempotency key, submits the post, then reconciles status. It never blindly creates a new publish request after an uncertain outcome.
 - Telegram delivery uses a MySQL outbox with deduplication, retry backoff, and claim leases. Webhook state and its notification enqueue commit together; dispatcher runs retry pending notifications.
 - HTTP application serves static dashboard assets, authenticated JSON routes, login/session/logout, provider webhooks, health status, and safe error responses.
@@ -28,6 +30,12 @@ New schedule settings default to 60 minutes and use `schedule.intervalMinutes` a
 The product schedule and scheduler poll interval are separate. The poller checks for due work every 60 seconds by default (configurable from 15 to 3,600 seconds). On automation enable, the app requests an immediate first dispatch; the next slot follows the newly configured interval. A slot already scheduled before an interval edit keeps its timestamp, and that updated interval is used afterward. The poller also runs immediately on startup and then polls; persisted slots survive restarts. The planner skips slots more than 15 minutes late instead of catching up. MySQL settings-row locks serialize claims across app processes, and claim/publish guards allow only one active generation or publish cycle per automation session. Unknown provider outcomes continue to block later slots until reconciled.
 
 The daily Telegram summary is scheduled for 22:00 `Asia/Jakarta` regardless of a stored schedule timezone.
+
+## NDI business content and migration
+
+Migration `021_ndi_business_knowledge.sql` is additive and restartable. It adds a structured NDI knowledge column, an admin-approval flag, separate legacy-settings archives, and a per-slot CTA snapshot. It copies old `settings_json` and `knowledge_json` into archive columns before removing game, price, old-brand, and tracked-link keys from the active settings object. It replaces old active knowledge with the NDI default, clears old active hashtags, and marks old service facts inactive without deleting them. It does not update `automation_enabled`, provider credentials, integration configuration, sessions, audit rows, or slot status.
+
+Onboarding is marked incomplete so an existing database cannot publish under old review state. Existing ready/pending slots have no CTA snapshot and fail closed; `publishing` and `unknown` slots retain their provider identity and state for existing reconciliation. After migration, a dashboard admin must review and save NDI knowledge before automation can pass its readiness checks. Image rollback does not undo MySQL DDL or restore archived old settings; assess compatibility and retain a verified backup before any production rollout.
 
 ## Publish and recovery states
 
@@ -72,10 +80,6 @@ Tebar documents immediate publishing and scheduled publishing, idempotency keys,
 | `src/http/routes/session-admin.js` | GET | `/api/admins` |
 | `src/http/routes/session-admin.js` | POST | `/api/admins` |
 | `src/http/routes/session-admin.js` | PATCH | `/api/admins/:id` |
-| `src/http/routes/templates.js` | GET | `/api/templates` |
-| `src/http/routes/templates.js` | POST | `/api/templates` |
-| `src/http/routes/templates.js` | PATCH | `/api/templates/:id` |
-| `src/http/routes/templates.js` | DELETE | `/api/templates/:id` |
 | `src/http/routes/dashboard.js` | GET | `/api/dashboard` |
 | `src/http/routes/dashboard.js` | PUT | `/api/settings` |
 | `src/http/routes/dashboard.js` | PUT | `/api/knowledge` |
@@ -92,5 +96,7 @@ Tebar documents immediate publishing and scheduled publishing, idempotency keys,
 | `src/http/routes/automation.js` | POST | `/api/automation/pause` |
 
 `test/routes.contract.test.js` compares dashboard API calls with registered Express method/path pairs and verifies the route set and ordering.
+
+`PUT /api/knowledge` and `PUT /api/settings` require authenticated sessions, same-origin validation, CSRF protection, and audit logging. `PUT /api/facts/:service` is retained as a compatibility response that returns `410 LEGACY_FACTS_ARCHIVED`; template and legacy Learning endpoints are not registered. The dashboard has no active game, top-up, template, or Learning controls.
 
 Webhook body parsing and fallback ordering are intentional: `/webhooks/tebar` uses raw-body parsing before `express.json()` so signature verification sees the signed bytes. The `/api` not-found handler stays after API routes and before static assets and the SPA fallback.

@@ -1,9 +1,9 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { validateSettings } = require('./policy');
+const { validateNdiSettings } = require('./ndi-settings');
 const { buildContentContext } = require('./content-context');
-const { generatePost, TOPIC_IDS, VALIDATION_CONTRACT_VERSION } = require('./content-service');
+const { generatePost, VALIDATION_CONTRACT_VERSION } = require('./content-service');
 const { createLearningShadowEvaluator } = require('./learning-shadow');
 const { policyConflicts, overlapConflict } = require('./learning');
 const { isSafeModelId } = require('./learning-shadow');
@@ -16,14 +16,13 @@ const { isSafeModelId } = require('./learning-shadow');
 /** @typedef {{status?: string, outcome?: string, deterministicOutcome?: string, semanticOutcome?: string, failureCodes?: string[], errors?: string[], text?: string}} ShadowGenerationResult */
 /** @typedef {{
  *   store: {acquireAdmission: () => Promise<{assertHealthy: () => Promise<void>, release: () => Promise<void>, signal?: AbortSignal}>, start: (input: object) => Promise<string>, finish: (id: string, outcome: object) => Promise<boolean>},
- *   repository: {getRuntimeState: () => Promise<{settings?: unknown, facts?: unknown, history?: object[]}>},
+ *   repository: {getRuntimeState: () => Promise<{settings?: unknown, facts?: unknown, history?: object[], businessKnowledgeApproved?: boolean}>},
  *   configuration: {getActive: () => Promise<{model?: unknown, version?: unknown}>},
  *   learningStore: {getApprovedRuleVersions: (ids: string[]) => Promise<Array<{id: unknown, version: unknown, instruction: string, productCategory: string, contentTopic: string, decision: string}>>},
  *   providerForModel: (modelId: string) => Promise<ShadowProvider>,
  *   generatorSampling?: object,
  *   generatePostImpl?: (scenario: object, options: ShadowGenerateOptions) => Promise<ShadowGenerationResult>,
  *   clock?: () => Date,
- *   allowedCtaHosts?: string[]
  * }} ShadowExecutionDependencies */
 
 function executionError(code, status = 400) {
@@ -56,7 +55,6 @@ function createLearningShadowExecutionService({
   generatorSampling = {},
   generatePostImpl = generatePost,
   clock = () => new Date(),
-  allowedCtaHosts = [],
 } = {}) {
   if (!store || !repository || !configuration || !learningStore
     || typeof learningStore.getApprovedRuleVersions !== 'function'
@@ -81,7 +79,7 @@ function createLearningShadowExecutionService({
       const [activeConfiguration, runtime] = await Promise.all([configuration.getActive(), repository.getRuntimeState()]);
       const modelId = activeConfiguration?.model;
       if (!isSafeModelId(modelId)) throw executionError('SHADOW_MODEL_UNAVAILABLE', 503);
-      const checked = validateSettings(runtime?.settings || {}, { allowedCtaHosts });
+      const checked = validateNdiSettings(runtime?.settings || {});
       if (!checked.valid) throw executionError('SHADOW_CONTEXT_UNAVAILABLE', 503);
       const timestamp = clock();
       if (!(timestamp instanceof Date) || !Number.isFinite(timestamp.getTime())) throw executionError('SHADOW_CONTEXT_UNAVAILABLE', 503);
@@ -90,9 +88,10 @@ function createLearningShadowExecutionService({
         facts: Array.isArray(runtime.facts) ? runtime.facts.slice(0, 100) : [],
         history: publishedHistory(runtime.history),
         now: timestamp,
+        businessKnowledgeApproved: runtime?.businessKnowledgeApproved === true,
       };
       const source = buildContentContext(scenario, checked.settings);
-      const contentTopic = TOPIC_IDS[source.creativeDirection?.suggestedTheme] || 'all';
+      const contentTopic = 'all';
       const storedRules = await learningStore.getApprovedRuleVersions(ruleIds);
       if (!Array.isArray(storedRules) || storedRules.length !== ruleIds.length) throw executionError('APPROVED_RULES_REQUIRED', 409);
       const rules = storedRules.map((rule) => ({
@@ -102,7 +101,7 @@ function createLearningShadowExecutionService({
       if (rules.some((rule) => rule.approved !== true)) throw executionError('APPROVED_RULES_REQUIRED', 409);
       if (rules.some((rule) => !approvedForContext(rule, source.pillar, contentTopic))) throw executionError('RULE_SCOPE_MISMATCH', 409);
       const policy = {
-        contentDirection: source.brand?.contentDirection || '',
+        contentDirection: source.contentGuidance || '',
         forbiddenClaims: source.forbiddenClaims,
         approvedFacts: JSON.stringify(source.facts),
       };

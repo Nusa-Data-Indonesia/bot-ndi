@@ -1,8 +1,12 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { formatSlotNotice } = require('./telegram-format');
-const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
+const { contentSafetyHash } = require('./content-safety');
+const { validateNdiCaption } = require('./content-validation');
 const { DateTime } = require('luxon');
-const { isInActiveWindow, validateSettings, isFactFresh, normalizeScheduleInterval } = require('./policy');
+const { isInActiveWindow, normalizeScheduleInterval } = require('./policy');
+const { validateNdiSettings } = require('./ndi-settings');
+const { validateBusinessKnowledge } = require('./business-knowledge');
+const { CONTENT_STRATEGY_READINESS } = require('./content-strategy-readiness');
 
 const STALE_PUBLISHING_AFTER_MS = 120_000;
 
@@ -73,59 +77,70 @@ async function mutationQuery(connection, sql, values = []) {
   return [/** @type {import('mysql2').ResultSetHeader} */ (result), fields];
 }
 
-/** @param {import('mysql2/promise').Pool} pool @param {{allowedCtaHosts?: string[]}} [options] */
-function createRepository(pool, { allowedCtaHosts = [] } = {}) {
+/** @param {import('mysql2/promise').Pool} pool */
+function createRepository(pool) {
   if (!pool || typeof pool.execute !== 'function') throw new TypeError('mysql pool is required');
   async function audit(connection, adminId, action, details = {}) {
     await connection.execute('INSERT INTO audit_logs (admin_id, action, details_json) VALUES (?, ?, ?)', [adminId || null, action, JSON.stringify(details)]);
   }
+  function runtimeSettings(row) {
+    const stored = json(row?.settings_json);
+    const knowledge = json(row?.business_knowledge_json, null);
+    const checked = validateNdiSettings({ schedule: stored.schedule || {}, hashtags: stored.hashtags || [], businessKnowledge: knowledge || {} });
+    return {
+      ...(checked.valid ? checked.settings : { schedule: normalizeScheduleInterval(stored.schedule || {}), hashtags: [], businessKnowledge: {} }),
+      targetAccountId: stored.targetAccountId || null,
+      profileId: stored.profileId || null,
+      onboardingComplete: stored.onboardingComplete === true,
+      automationSessionId: stored.automationSessionId || null,
+      nextSlotAt: stored.nextSlotAt || null,
+      integrationConfigInitialized: stored.integrationConfigInitialized === true,
+    };
+  }
   async function getSettings() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
-    const row = rows[0]; if (!row) return { automationEnabled: false };
-    const settings = json(row.settings_json);
-    const knowledge = json(row.knowledge_json);
-    return { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {}, automationEnabled: Boolean(row.automation_enabled) };
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
+    const row = rows[0];
+    if (!row) return { automationEnabled: false, businessKnowledgeApproved: false };
+    return { ...runtimeSettings(row), businessKnowledgeApproved: Boolean(row.business_knowledge_approved), automationEnabled: Boolean(row.automation_enabled) };
   }
   async function getRuntimeState() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
     const row = rows[0];
-    const settings = json(row.settings_json);
-    const knowledge = json(row.knowledge_json);
-    const facts = await listFacts();
+    const settings = runtimeSettings(row);
     const history = await listSlots(1000);
-    const factRows = Object.entries(facts).map(([service, fact]) => ({ ...fact.summary, id: service, pillar: service === 'account' ? 'account' : 'topup', active: fact.active, updatedAt: fact.updatedAt }));
-    return { settings: { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {} }, knowledge, facts: factRows, history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+    return { settings, businessKnowledge: settings.businessKnowledge, businessKnowledgeApproved: Boolean(row?.business_knowledge_approved), contentStrategyReady: CONTENT_STRATEGY_READINESS.ready, contentStrategyReason: CONTENT_STRATEGY_READINESS.message, facts: [], history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
   }
   async function saveSettings(settings, adminId) {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      const safeSettings = { ...settings }; delete safeSettings.automationEnabled;
-      if (safeSettings.schedule && typeof safeSettings.schedule === 'object' && !Array.isArray(safeSettings.schedule)) safeSettings.schedule = normalizeScheduleInterval(safeSettings.schedule);
+      const checkedSettings = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [] });
+      if (!checkedSettings.valid) throw Object.assign(new Error('INVALID_SETTINGS'), { code: 'INVALID_SETTINGS' });
+      const safeSettings = { schedule: checkedSettings.settings.schedule, hashtags: checkedSettings.settings.hashtags };
       const [[existingRow]] = await selectQuery(connection, 'SELECT settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const existing = json(existingRow?.settings_json);
-      for (const key of ['targetAccountId','profileId','integrationConfigInitialized','onboardingComplete','nextSlotAt','automationSessionId']) if (safeSettings[key] === undefined && existing[key] !== undefined) safeSettings[key] = existing[key];
+      for (const key of ['brand','guardrails','gameWhitelist','priceMode','trackedLinks']) delete existing[key];
       const scheduleKey = (schedule) => {
-        const checked = validateSettings({ schedule: schedule || {} }, { allowedCtaHosts });
+        const checked = validateNdiSettings({ schedule: schedule || {}, hashtags: [] });
         return JSON.stringify(checked.valid ? checked.settings.schedule : normalizeScheduleInterval(schedule || {}));
       };
-      if (scheduleKey(existing.schedule) !== scheduleKey(safeSettings.schedule)) delete safeSettings.nextSlotAt;
-      const knowledge = { brand: safeSettings.brand || {}, guardrails: safeSettings.guardrails || {} };
-      await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(safeSettings), JSON.stringify(knowledge)]);
+      if (scheduleKey(existing.schedule) !== scheduleKey(safeSettings.schedule)) delete existing.nextSlotAt;
+      const nextSettings = { ...existing, ...safeSettings };
+      await connection.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(nextSettings)]);
       await audit(connection, adminId, 'settings.updated', {});
-      await connection.commit(); return { ...safeSettings, automationEnabled: (await getSettings()).automationEnabled };
+      await connection.commit(); return await getSettings();
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async function saveKnowledge(knowledge, adminId) {
+    const checked = validateBusinessKnowledge(knowledge);
+    if (!checked.valid) throw Object.assign(new Error('INVALID_KNOWLEDGE'), { code: 'INVALID_KNOWLEDGE', fields: checked.errors });
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      const [[row]] = await selectQuery(connection, 'SELECT settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
-      const settings = json(row.settings_json);
-      settings.brand = knowledge.brand || settings.brand || {};
-      settings.guardrails = knowledge.guardrails || settings.guardrails || {};
-      await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
-      await audit(connection, adminId, 'knowledge.updated', {}); await connection.commit(); return knowledge;
+      await selectQuery(connection, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      await connection.execute('UPDATE settings SET business_knowledge_json=?,business_knowledge_approved=TRUE WHERE id=1', [JSON.stringify(checked.knowledge)]);
+      await audit(connection, adminId, 'ndi_knowledge.approved', { serviceCount: checked.knowledge.services.length });
+      await connection.commit(); return { knowledge: checked.knowledge, approved: true };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async function listFacts() {
@@ -240,55 +255,6 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const [rows] = await selectQuery(pool, 'SELECT id,email,active,created_at FROM admins ORDER BY created_at,id');
     return rows.map((row) => ({ id: Number(row.id), email: row.email, active: Boolean(row.active), createdAt: row.created_at }));
   }
-  function mapTemplate(row) {
-    return { id: row.id, name: row.name, category: row.category, data: json(row.data_json), createdBy: row.created_by == null ? null : Number(row.created_by), updatedBy: row.updated_by == null ? null : Number(row.updated_by), createdAt: row.created_at, updatedAt: row.updated_at };
-  }
-  async function listTemplates() {
-    const [rows] = await selectQuery(pool, 'SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates ORDER BY category,name');
-    return rows.map(mapTemplate);
-  }
-  async function getTemplate(id) {
-    const [rows] = await selectQuery(pool, 'SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates WHERE id=?', [id]);
-    return rows[0] ? mapTemplate(rows[0]) : null;
-  }
-  async function createTemplate({ name, category, data, actorId }) {
-    const id = randomUUID(); const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.execute('INSERT INTO templates (id,name,category,data_json,created_by,updated_by) VALUES (?,?,?,?,?,?)', [id,name,category,JSON.stringify(data),actorId,actorId]);
-      await audit(conn, actorId, 'template.created', { templateId:id, name, category });
-      await conn.commit();
-      return await getTemplate(id);
-    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
-    finally { conn.release(); }
-  }
-  async function updateTemplate(id, { name, data, actorId }) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [[existing]] = await selectQuery(conn, 'SELECT name,category,data_json FROM templates WHERE id=? FOR UPDATE', [id]);
-      if (!existing) { await conn.rollback(); return null; }
-      const nextName = name === undefined ? existing.name : name;
-      const nextData = data === undefined ? json(existing.data_json) : data;
-      await conn.execute('UPDATE templates SET name=?,data_json=?,updated_by=? WHERE id=?', [nextName,JSON.stringify(nextData),actorId,id]);
-      await audit(conn, actorId, 'template.updated', { templateId:id, name:nextName, category:existing.category });
-      await conn.commit();
-      return await getTemplate(id);
-    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
-    finally { conn.release(); }
-  }
-  async function deleteTemplate(id, actorId) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [[existing]] = await selectQuery(conn, 'SELECT name,category FROM templates WHERE id=? FOR UPDATE', [id]);
-      if (!existing) { await conn.rollback(); return false; }
-      await conn.execute('DELETE FROM templates WHERE id=?', [id]);
-      await audit(conn, actorId, 'template.deleted', { templateId:id, name:existing.name, category:existing.category });
-      await conn.commit(); return true;
-    } catch (error) { await conn.rollback(); throw error; }
-    finally { conn.release(); }
-  }
   async function createAdmin({ email, passwordHash, actorId }) {
     const conn = await pool.getConnection();
     try { await conn.beginTransaction(); await selectQuery(conn, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query'); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await selectQuery(conn, 'SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
@@ -342,9 +308,13 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[current]] = await selectQuery(c, 'SELECT settings_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[current]] = await selectQuery(c, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(current?.settings_json);
       if (enabled) {
+        const businessSettings = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: json(current?.business_knowledge_json, {}) });
+        if (current?.business_knowledge_approved !== 1 && current?.business_knowledge_approved !== true || !businessSettings.valid) {
+          throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
+        }
         const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
         if (integration?.status !== 'ACTIVE' || !integration.profile_id || !integration.account_id || !integration.model
           || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
@@ -366,7 +336,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       let firstPostAt = settings.nextSlotAt || null;
       let immediate = false;
       if (enabled && changed) {
-        const checked = validateSettings({ ...settings, schedule: settings.schedule || {} }, { allowedCtaHosts });
+        const checked = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: json(current?.business_knowledge_json, {}) });
         if (!checked.valid) throw Object.assign(new Error('INVALID_SETTINGS'), { code: 'INVALID_SETTINGS' });
         const now = new Date();
         firstPostAt = now.toISOString();
@@ -412,13 +382,14 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(state?.settings_json);
-      const knowledge = json(state?.knowledge_json);
-      const validated = validateSettings({ ...settings, brand: knowledge.brand || settings.brand, guardrails: knowledge.guardrails || settings.guardrails }, { allowedCtaHosts });
+      const knowledge = json(state?.business_knowledge_json, {});
+      const validated = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: knowledge });
       const sessionId = settings.automationSessionId;
-      if (!state?.automation_enabled || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
+      if (!state?.automation_enabled || state.business_knowledge_approved !== 1 && state.business_knowledge_approved !== true
+        || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
         || integration?.status !== 'ACTIVE' || !integration.model || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
         await c.rollback();
         return null;
@@ -426,7 +397,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       if (await hasProviderHold(c, integration.profile_id, integration.account_id)) { await c.commit(); return null; }
       const [[inFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
       if (inFlight) { await c.commit(); return null; }
-      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
       if (!slot.tebar_profile_id || !slot.tebar_account_id || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id) {
@@ -448,11 +419,11 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       }
       if (slot.status === 'pending') {
         await c.execute('INSERT INTO generation_slot_claims (slot_id,claimed_at) VALUES (?,?)', [slot.id, now]);
-        await c.execute("UPDATE slots SET status='generating',claimed_at=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, integration.model, integration.version, slot.id]);
+        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.version, slot.id]);
       }
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -461,13 +432,13 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c=await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[row]]=await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[row]]=await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
-      const settings=json(row?.settings_json);const knowledge=json(row?.knowledge_json);
+      const settings=json(row?.settings_json);const knowledge=json(row?.business_knowledge_json,{});
       const sessionId=settings.automationSessionId;
       const savedSchedule=settings.schedule||schedule||{};
-      const checked=validateSettings({...settings,schedule:savedSchedule,brand:knowledge.brand||settings.brand,guardrails:knowledge.guardrails||settings.guardrails},{allowedCtaHosts});
-      if(!row?.automation_enabled||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
+      const checked=validateNdiSettings({schedule:savedSchedule,hashtags:settings.hashtags||[],businessKnowledge:knowledge});
+      if(!row?.automation_enabled||row.business_knowledge_approved!==1&&row.business_knowledge_approved!==true||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
       if(await hasProviderHold(c,integration.profile_id,integration.account_id)){await c.commit();return {slot:null,created:false,skippedCount:0,held:true};}
       const scheduleChanged=JSON.stringify(settings.schedule||{})!==JSON.stringify(checked.settings.schedule);
       settings.schedule=checked.settings.schedule;
@@ -569,12 +540,12 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
+      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
       const payload = json(slot?.request_payload);
-      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || !sessionId || slot.automation_session_id!==sessionId
+      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || settings.business_knowledge_approved!==1&&settings.business_knowledge_approved!==true || !sessionId || slot.automation_session_id!==sessionId
         || integration?.status !== 'ACTIVE' || !slot.tebar_profile_id || !slot.tebar_account_id
         || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id
         || payload?.targets?.length !== 1 || payload.targets[0]?.account_id !== slot.tebar_account_id) { await c.rollback(); return false; }
@@ -589,33 +560,25 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         return 'in_flight';
       }
       const config = json(settings.settings_json);
-      const knowledge = json(settings.knowledge_json);
-      const currentHash = contentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
-      const previousHash = legacyContentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
-      if (!slot.content_safety_hash || !currentHash || ![currentHash, previousHash].includes(slot.content_safety_hash)) {
+      const knowledge = json(settings.business_knowledge_json, {});
+      const ndiSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
+      const currentHash = ndiSettings.valid ? contentSafetyHash(ndiSettings.settings) : null;
+      const captionCheck = validateNdiCaption(payload?.content, {
+        ctaUrl: slot.cta_url,
+        hashtags: ndiSettings.settings?.hashtags || [],
+        forbiddenClaims: ndiSettings.settings?.businessKnowledge?.forbiddenClaims || [],
+      });
+      if (!slot.content_safety_hash || !currentHash || slot.content_safety_hash !== currentHash || !captionCheck.valid) {
         await c.rollback(); return 'stale_facts';
       }
       const ids = json(slot.fact_ids, []);
       const versions = json(slot.fact_versions, []);
       if (!Array.isArray(ids) || !Array.isArray(versions)
-        || (slot.fact_bearing && !ids.length)
-        || new Set(ids.map(String)).size !== ids.length
-        || new Set(versions.map((version) => String(version?.id))).size !== versions.length
-        || ids.some((id) => !versions.some((version) => version?.id === id))
-        || versions.some((version) => !version || !version.id || !version.updatedAt)) {
+        || slot.fact_bearing || ids.length || versions.length) {
         await c.rollback(); return 'stale_facts';
       }
-      for (const version of versions) {
-        const [[fact]] = await selectQuery(c, 'SELECT service,active,updated_at FROM service_facts WHERE service=? FOR UPDATE', [version.id]);
-        const sourceTime = fact?.updated_at ? new Date(fact.updated_at).getTime() : NaN;
-        const expectedTime = new Date(version.updatedAt).getTime();
-        if (!fact || !isFactFresh({ active: Boolean(fact.active), updatedAt: fact.updated_at }, now)
-          || !Number.isFinite(expectedTime) || sourceTime !== expectedTime) {
-          await c.rollback(); return 'stale_facts';
-        }
-      }
       const [[last]] = await selectQuery(c, "SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId,id]);
-      const checkedSettings = validateSettings({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
+      const checkedSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
       if (!checkedSettings.valid) { await c.rollback(); return 'stale_facts'; }
       const cadenceMs = checkedSettings.settings.schedule.intervalMinutes * 60_000;
       if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < cadenceMs) {
@@ -964,9 +927,9 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       await c.beginTransaction();
       try { await c.execute('INSERT INTO webhook_events (event_id,payload_hash) VALUES (?,?)',[eventId,payloadHash]); }
       catch(e) { if(e.code==='ER_DUP_ENTRY'){await c.rollback();return false;} throw e; }
-      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1', [], 'query');
+      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,business_knowledge_json,automation_enabled FROM settings WHERE id=1', [], 'query');
       const configured=json(settingsRow?.settings_json);
-      const knowledge=json(settingsRow?.knowledge_json);
+      const knowledge=json(settingsRow?.business_knowledge_json,{});
       const eventType=String(type||'');
       const target = data.target && typeof data.target === 'object' && !Array.isArray(data.target)
         ? /** @type {Record<string, unknown>} */ (data.target) : {};
@@ -1022,7 +985,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
           const expectedStatus=notificationCode==='post_published'?'published':'failed';
           if(slot && (slot.status===expectedStatus || (expectedStatus==='failed' && slot.status==='partial')) && message) {
             dedupeId=`${notificationCode}:slot:${slot.id}`;
-            message=formatSlotNotice({status:expectedStatus,slotId:slot.id,brand:knowledge.brand?.name||configured.brand?.name,
+            message=formatSlotNotice({status:expectedStatus,slotId:slot.id,brand:knowledge.companyName || 'Nusa Data Indonesia',
               time:slot.completed_at||slot.scheduled_at,timezone:configured.schedule?.timezone,pillar:slot.pillar,caption:slot.caption,
               reason:slot.error_code||'provider_error',nextAt:settingsRow?.automation_enabled?configured.nextSlotAt:null});
           } else message=null;
@@ -1061,7 +1024,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

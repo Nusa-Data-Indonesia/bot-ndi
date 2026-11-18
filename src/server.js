@@ -7,14 +7,11 @@ const { randomUUID } = require('node:crypto');
 const { createIpRateLimiter } = require('./rate-limit');
 const { createHttpMiddleware, COOKIE } = require('./http/middleware');
 const { registerSessionAdminRoutes } = require('./http/routes/session-admin');
-const { registerTemplateRoutes } = require('./http/routes/templates');
 const { registerDashboardRoutes } = require('./http/routes/dashboard');
 const { registerAutomationRoutes } = require('./http/routes/automation');
 const { registerWebhookRoutes } = require('./http/routes/webhooks');
 const { registerIntegrationRoutes } = require('./http/routes/integrations');
 const { registerPublicationResolutionRoutes } = require('./http/routes/publication-resolution');
-const { registerLearningRoutes } = require('./http/routes/learning');
-const { registerLearningEvaluationRoutes } = require('./http/routes/learning-evaluation');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
@@ -97,27 +94,17 @@ function createServer({ config, repository, auth, services = {} } = {}) {
   registerSessionAdminRoutes(app, { repository, auth, middleware });
   registerPublicationResolutionRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerIntegrationRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
-  registerLearningRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
-  registerLearningEvaluationRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
-  registerTemplateRoutes(app, {
-    repository,
-    authenticated: middleware.authenticated,
-    mutation: middleware.mutation,
-    allowedCtaHosts: config.approvedCtaHosts,
-  });
   registerDashboardRoutes(app, {
     repository,
     services,
     authenticated: middleware.authenticated,
     mutation: middleware.mutation,
-    allowedCtaHosts: config.approvedCtaHosts,
   });
   registerAutomationRoutes(app, {
     repository,
     services,
     authenticated: middleware.authenticated,
     mutation: middleware.mutation,
-    allowedCtaHosts: config.approvedCtaHosts,
   });
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

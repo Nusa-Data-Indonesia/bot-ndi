@@ -121,7 +121,7 @@ Isi dengan credential baru, hanya di LXC:
 
 - `HOST_IP`: alamat IPv4 LXC yang diverifikasi pada langkah 1. Port aplikasi hanya dipetakan ke alamat ini.
 - `BASE_URL=https://botndi.sequein.my.id`.
-- `APPROVED_CTA_HOSTS`: kosongkan sampai NDI menyetujui hostname tujuan tautan pemasaran; `botndi.sequein.my.id` adalah domain aplikasi dan tidak dianggap otomatis sebagai domain CTA.
+- **Website Resmi / CTA URL** dikelola admin di dashboard dan tersimpan di database; default-nya `https://nusadataindonesia.com`. Nilai CTA boleh berupa URL HTTPS valid pada hostname mana pun. CTA tidak memicu request server; domain dashboard tetap berbeda dari URL pemasaran.
 - `TRUST_PROXY`: setelah memeriksa route gateway, isi alamat IP aktual Traefik yang menjadi peer koneksi ke aplikasi. Untuk sementara gunakan `false` jika alamat sumber belum diverifikasi; jangan gunakan `true` atau rentang umum.
 - `DB_NAME=bot_ndi` dan `DB_USER=bot_ndi_app`; buat nilai baru dan unik untuk `DB_PASSWORD` serta `DB_ROOT_PASSWORD`.
 - Biarkan `EXTERNAL_INTEGRATIONS_ENABLED=false`, `SCHEDULER_ENABLED=false`, dan semua `LEARNING_*_ENABLED=false` selama initial deployment.
@@ -239,7 +239,7 @@ Gunakan gateway LXC `10080` serta Cloudflare Tunnel dan Traefik yang sudah ada. 
 6. Isi `TRUST_PROXY` pada `.env` dengan IP sumber Traefik yang terlihat oleh Bot NDI setelah diverifikasi. Aplikasi tidak boleh mempercayai seluruh proxy (`true`) tanpa kontrol jaringan yang sesuai.
 7. Pertahankan `BASE_URL=https://botndi.sequein.my.id`. Di production, aplikasi mengirim session cookie `HttpOnly`, `SameSite=Strict`, dan `Secure`; TLS publik harus tetap aktif di Cloudflare/ingress.
 8. Dashboard memakai autentikasi admin aplikasi. Buat password admin kuat dan berikan akun hanya kepada operator yang berwenang. Jangan menganggap hostname publik atau Cloudflare tunnel sebagai pengganti autentikasi dashboard.
-9. Sebelum mengaktifkan integrasi atau posting, review bahasa konten, brand/fakta, klaim yang diizinkan, dan allowlist CTA pada `src/policy.js`; ganti hanya dengan kebijakan serta domain NDI yang disetujui. Perubahan infrastruktur tidak mengubah aturan produk tersebut.
+9. Sebelum aktivasi, review pengetahuan bisnis NDI dan klaim yang disetujui pada dashboard, periksa URL CTA, serta pastikan tidak ada slot lama yang masih membutuhkan rekonsiliasi. Migrasi 021 meminta persetujuan ulang atas knowledge bisnis; jangan mengaktifkan scheduler atau integrasi sebagai bagian dari migrasi.
 
 Jangan mempublikasikan MySQL melalui Traefik, Cloudflare Tunnel, atau port host. Jangan mengubah route aplikasi gateway lain.
 

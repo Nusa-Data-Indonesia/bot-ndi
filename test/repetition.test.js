@@ -1,41 +1,47 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateFullCaption } = require('../src/content-validation');
-const errors = (text, prior, context = {}) => validateFullCaption(text, { ...context, recentCaptions: [prior] }).errors;
+const { validateNdiCaption } = require('../src/content-validation');
 
-test('removes links and hashtags symmetrically before comparing text', () => {
-  const prior = 'Jom main bersama!\nhttps://example.test/old#top\n#Lama';
-  const current = 'Jom main bersama!\nhttps://example.test/new\n#Baru';
-  assert.ok(errors(current, prior, { trackedLink: 'https://example.test/new', hashtags: ['#Baru'] }).includes('REPETITIVE_CAPTION'));
+const CTA = 'https://nusadataindonesia.com';
+const HASHTAGS = ['#NusaDataIndonesia'];
+const body = (text) => `${text}\n#NusaDataIndonesia\n${CTA}`;
+const errors = (text, prior) => validateNdiCaption(body(text), {
+  ctaUrl: CTA,
+  hashtags: HASHTAGS,
+  recentCaptions: [body(prior)],
+}).errors;
+
+test('removes the required CTA and hashtags symmetrically before comparing NDI captions', () => {
+  const prior = 'Tim dapat menata informasi agar keputusan bisnis lebih jelas.';
+  const current = 'Tim dapat menata informasi agar keputusan bisnis lebih jelas.';
+  assert.ok(errors(current, prior).includes('REPETITIVE_CAPTION'));
 });
 
-test('short identical captions are rejected, distinct short captions are accepted', () => {
-  assert.ok(errors('Jom main!', 'Jom main?').includes('REPETITIVE_CAPTION'));
-  assert.ok(!errors('Jom rehat!', 'Jom main?').includes('REPETITIVE_CAPTION'));
+test('short identical NDI captions are rejected and distinct captions are accepted', () => {
+  assert.ok(errors('Mari diskusikan kebutuhan data tim Anda.', 'Mari diskusikan kebutuhan data tim Anda.').includes('REPETITIVE_CAPTION'));
+  assert.ok(!errors('Yuk pelajari integrasi API untuk organisasi.', 'Mari diskusikan kebutuhan data tim Anda.').includes('REPETITIVE_CAPTION'));
 });
 
-test('similar vocabulary with opposite order or different intent is not automatically rejected', () => {
-  const first = 'Adakah pemain patut membeli akaun lama atau memilih akaun baru untuk bermain bersama kawan?';
-  const different = 'Pemain memilih akaun baru supaya dapat bermain bersama kawan, bukan membeli akaun lama.';
-  assert.ok(!errors(different, first).includes('REPETITIVE_CAPTION'));
-});
-
-test('different negation is not treated as lexical duplication', () => {
-  const first = 'Korang patut membeli akaun lama untuk bermain bersama kawan pada waktu malam ini';
-  const different = 'Korang tidak patut membeli akaun lama untuk bermain bersama kawan pada waktu malam ini';
+test('opposite intent and different negation are not treated as lexical duplication', () => {
+  const first = 'Tim dapat memakai data untuk memahami kebutuhan bisnis dan menyusun sistem yang lebih sesuai.';
+  const different = 'Tim tidak memakai data untuk memahami kebutuhan bisnis dan menyusun sistem yang lebih sesuai.';
   assert.ok(!errors(different, first).includes('REPETITIVE_CAPTION'));
 });
 
 test('long near-identical captions are flagged when the sequence is substantially the same', () => {
-  const first = 'Setiap pemain punya cara berbeza untuk menikmati permainan bersama kawan pada malam minggu.';
-  const second = 'Setiap pemain punya cara berbeza untuk menikmati permainan bersama kawan pada malam ini.';
+  const first = 'Setiap organisasi memiliki kebutuhan data yang berbeda saat menyusun sistem digital untuk mendukung keputusan tim.';
+  const second = 'Setiap organisasi memiliki kebutuhan data berbeda saat menyusun sistem digital untuk mendukung keputusan tim.';
   assert.ok(errors(second, first).includes('REPETITIVE_CAPTION'));
 });
 
-test('normalization cannot hide unapproved links or hashtags from security validation', () => {
-  const output = errors('Jom main! https://evil.test #unknown', 'Jom main!', { hashtags: ['#approved'] });
-  assert.ok(output.includes('UNAPPROVED_LINK'));
-  assert.ok(output.includes('UNAPPROVED_HASHTAG'));
-  assert.ok(output.includes('REPETITIVE_CAPTION'));
+test('a repeated caption cannot bypass link or hashtag validation', () => {
+  const result = validateNdiCaption(`Mari diskusikan kebutuhan data untuk organisasi Anda.\n#NusaDataIndonesia #Unknown\nhttps://evil.example.test\n${CTA}`, {
+    ctaUrl: CTA,
+    hashtags: HASHTAGS,
+    recentCaptions: [body('Mari diskusikan kebutuhan data untuk organisasi Anda.')],
+  });
+  assert.ok(result.errors.includes('UNAPPROVED_LINK'));
+  assert.ok(result.errors.includes('UNAPPROVED_HASHTAG'));
+  assert.ok(result.errors.includes('REPETITIVE_CAPTION'));
 });

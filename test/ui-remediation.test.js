@@ -19,7 +19,8 @@ test('API errors preserve server field details and use Indonesian messages', () 
   contains(app, /error\.fields\s*=\s*payload\.fields/, 'API errors should retain backend field details');
   contains(app, /error\.retryAfterSeconds\s*=\s*parseRetryAfterSeconds\(payload\.retryAfterSeconds/, 'API errors should retain the retry duration');
   contains(app, /code === 'LOGIN_RATE_LIMITED'\) return formatLoginWait/, 'login rate-limit errors should use the retry duration');
-  contains(app, /INVALID_FACT_PRICE:\s*['"][^'"]*Harga[^'"]*['"]/, 'price validation should have a Bahasa Indonesia message');
+  contains(app, /INVALID_KNOWLEDGE:\s*['"][^'"]*layanan[^'"]*['"]/, 'NDI knowledge validation should have a Bahasa Indonesia message');
+  assert.doesNotMatch(app, /GAME_NOT_WHITELISTED|INVALID_FACT_PRICE|priceMode|gameWhitelist/, 'legacy game and price field errors should not remain active in the dashboard');
   contains(app, /function showFormError\(/, 'form errors should have a field-level presenter');
   contains(app, /aria-invalid/, 'invalid fields should expose their state');
   contains(app, /aria-describedby/, 'field errors should be associated with controls');
@@ -135,7 +136,7 @@ test('all mutating form and automation handlers call the pending guard', () => {
 });
 
 test('mobile navigation exposes all destinations and active panel semantics', () => {
-  for (const tab of ['dashboard', 'content', 'templates', 'schedule', 'facts', 'activity', 'ai', 'integrations', 'admins']) {
+  for (const tab of ['dashboard', 'content', 'schedule', 'facts', 'activity', 'ai', 'integrations', 'admins']) {
     contains(html, new RegExp(`data-tab="${tab}"[^>]*aria-controls="tab-${tab}"`), tab + ' tab should control its panel');
     contains(html, new RegExp(`id="tab-${tab}"[^>]*aria-labelledby="tab-button-${tab}"`), tab + ' panel should reference its tab');
   }
@@ -150,7 +151,7 @@ test('mobile navigation exposes all destinations and active panel semantics', ()
   contains(app, /event\.key === 'Home'/, 'tab list should support Home navigation');
   contains(app, /event\.key === 'Escape'/, 'mobile drawer should close with Escape');
   contains(app, /sidebar\.inert = !open/, 'closed mobile drawer should be removed from keyboard navigation');
-  contains(app, /button:not\(\[disabled\]\):not\(\[tabindex="-1"\]\)/, 'mobile focus trap should follow the roving tab stop');
+  contains(app, /button:not\(\[disabled\]\):not\(\[hidden\]\):not\(\[tabindex="-1"\]\)/, 'mobile focus trap should follow the visible roving tab stop');
   contains(app, /focusWasInSidebar\s*=\s*sidebar\.contains\(document\.activeElement\)/, 'breakpoint changes should detect focus inside the sidebar');
   contains(app, /if\s*\(focusWasInSidebar\)\s*sidebarToggle\.focus\(\)/, 'breakpoint changes should restore focus from an inert sidebar');
   contains(app, /focusWasOnMobileControl[\s\S]*sidebarClose[\s\S]*sidebarBackdrop/, 'desktop breakpoint should restore focus from hidden drawer controls');

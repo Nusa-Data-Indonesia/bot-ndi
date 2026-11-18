@@ -1,6 +1,19 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
+const { DEFAULT_NDI_KNOWLEDGE }=require('../src/business-knowledge');
 const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='bot_ndi_test'&&['localhost','127.0.0.1','::1'].includes(process.env.DB_HOST)&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
+
+function encodeJson(value) { return typeof value==='string' ? value : JSON.stringify(value); }
+function ndiKnowledge(ctaUrl='https://nusadataindonesia.com') { return { ...DEFAULT_NDI_KNOWLEDGE, ctaUrl }; }
+async function snapshotBusinessSettings(pool) {
+  const [[row]]=await pool.execute('SELECT settings_json,knowledge_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
+  return row;
+}
+async function restoreBusinessSettings(pool,row) {
+  await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=?,automation_enabled=? WHERE id=1',[
+    encodeJson(row.settings_json),encodeJson(row.knowledge_json),encodeJson(row.business_knowledge_json),row.business_knowledge_approved,row.automation_enabled,
+  ]);
+}
 
 async function deleteSlot(pool,id) {
   await pool.execute('DELETE FROM generation_attempts WHERE slot_id=?',[id]);
@@ -87,23 +100,26 @@ test('MySQL migrations and repository are reachable in integration environment',
     const repo=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });
     assert.equal(await repo.healthCheck(),true);
     const settings=await repo.getSettings();assert.equal(settings.automationEnabled,false);assert.deepEqual(settings.hashtags,[]);
-    const contentDirection='Utamakan soalan santai tentang pengalaman bermain bersama kawan.';
-    const hookVocabulary=['Cerita pengalaman','Sembang santai'];
-    const savedHashtags=await repo.saveSettings({...settings,hashtags:['#TokoContoh','#MobileLegends'],brand:{...(settings.brand||{}),contentDirection},guardrails:{...(settings.guardrails||{}),hookVocabulary}},null);
-    assert.deepEqual(savedHashtags.hashtags,['#TokoContoh','#MobileLegends']);
-    assert.equal(savedHashtags.brand.contentDirection,contentDirection);
-    assert.deepEqual(savedHashtags.guardrails.hookVocabulary,hookVocabulary);
+    assert.equal(settings.businessKnowledge.companyName,'Nusa Data Indonesia');assert.equal(settings.businessKnowledge.ctaUrl,'https://nusadataindonesia.com');assert.equal(settings.businessKnowledgeApproved,false);
+    const savedHashtags=await repo.saveSettings({...settings,hashtags:['#NusaDataIndonesia','#DataTeknologi']},null);
+    assert.deepEqual(savedHashtags.hashtags,['#NusaDataIndonesia','#DataTeknologi']);
     const [[storedHashtagSettings]]=await pool.execute('SELECT settings_json, knowledge_json FROM settings WHERE id=1');
     const storedHashtagJson=typeof storedHashtagSettings.settings_json==='string'?storedHashtagSettings.settings_json:JSON.stringify(storedHashtagSettings.settings_json);
-    assert.deepEqual(JSON.parse(storedHashtagJson).hashtags,['#TokoContoh','#MobileLegends']);
-    assert.equal(JSON.parse(storedHashtagJson).brand.contentDirection,contentDirection);
+    assert.deepEqual(JSON.parse(storedHashtagJson).hashtags,['#NusaDataIndonesia','#DataTeknologi']);
+    for(const key of ['brand','guardrails','gameWhitelist','priceMode','trackedLinks']) assert.equal(Object.hasOwn(JSON.parse(storedHashtagJson),key),false);
     const storedKnowledgeJson=typeof storedHashtagSettings.knowledge_json==='string'?storedHashtagSettings.knowledge_json:JSON.stringify(storedHashtagSettings.knowledge_json);
-    assert.deepEqual(JSON.parse(storedKnowledgeJson).guardrails.hookVocabulary,hookVocabulary);
-    assert.deepEqual((await repo.getSettings()).guardrails.hookVocabulary,hookVocabulary);
+    assert.deepEqual(JSON.parse(storedKnowledgeJson),{});
+    const approvedKnowledge=await repo.saveKnowledge({...settings.businessKnowledge,
+      services:['Pengembangan perangkat lunak kustom','Dashboard dan analitik data'],
+      contentGuidance:'Jelaskan batas layanan dan potensi manfaat tanpa klaim hasil yang belum dibuktikan.',
+      ctaUrl:'https://example.org/ndi'},null);
+    assert.equal(approvedKnowledge.approved,true);
+    assert.equal((await repo.getSettings()).businessKnowledgeApproved,true);
+    assert.equal((await repo.getSettings()).businessKnowledge.ctaUrl,'https://example.org/ndi');
     await pool.execute("DELETE FROM schema_migrations WHERE version='005_hashtags_default.sql'");
     assert.deepEqual(await runMigrations(pool),['005_hashtags_default.sql']);
-    assert.deepEqual((await repo.getSettings()).hashtags,['#TokoContoh','#MobileLegends']);
-    await repo.saveSettings({...await repo.getSettings(),hashtags:settings.hashtags,brand:settings.brand,guardrails:settings.guardrails},null);
+    assert.deepEqual((await repo.getSettings()).hashtags,['#NusaDataIndonesia','#DataTeknologi']);
+    await repo.saveSettings({...await repo.getSettings(),hashtags:settings.hashtags},null);
     const facts=await repo.listFacts();assert.equal(typeof facts,'object');
     const dedupeKey=randomBytes(32).toString('hex');
     const longKey=randomBytes(32).toString('hex');
@@ -128,11 +144,11 @@ test('MySQL migrations and repository are reachable in integration environment',
     const second=await repo.createAdmin({email:`second-${randomUUID()}@example.test`,passwordHash:await hashPassword('second secure password'),actorId:first.id});
     createdAdminIds.push(second.id);
     assert.equal((await repo.listAdmins()).length,existingAdmins.length+2);
-    const savedTemplate=await repo.createTemplate({name:`Account-${randomUUID()}`,category:'account',data:{attributes:['Rank Mythic']},actorId:first.id});
-    assert.deepEqual((await repo.listTemplates()).find(item=>item.id===savedTemplate.id).data,{attributes:['Rank Mythic']});
-    assert.equal((await repo.updateTemplate(savedTemplate.id,{name:`Updated-${randomUUID()}`,actorId:second.id})).updatedBy,second.id);
-    assert.equal(await repo.deleteTemplate(savedTemplate.id,first.id),true);
-    assert.equal(await repo.getTemplate(savedTemplate.id),null);
+    const archivedTemplateId=randomUUID();
+    await pool.execute('INSERT INTO templates (id,name,category,data_json,created_by) VALUES (?,?,?,?,?)',[archivedTemplateId,`Archived-${randomUUID()}`,'account',JSON.stringify({attributes:['legacy archive fixture']}),first.id]);
+    const [[archivedTemplate]]=await pool.execute('SELECT category,data_json FROM templates WHERE id=?',[archivedTemplateId]);
+    assert.equal(archivedTemplate.category,'account');
+    assert.deepEqual(typeof archivedTemplate.data_json==='string'?JSON.parse(archivedTemplate.data_json):archivedTemplate.data_json,{attributes:['legacy archive fixture']});
     const sessionToken=randomUUID().replaceAll('-','').padEnd(64,'a').slice(0,64);
     await repo.createSession({tokenHash:sessionToken,adminId:second.id,csrfToken:'c'.repeat(64),expiresAt:new Date(Date.now()+3600000)});
     const unchanged=await repo.updateAdmin(second.id,{email:second.email},first.id);
@@ -292,21 +308,17 @@ test('MySQL migrations and repository are reachable in integration environment',
       await deleteSlot(pool,mysqlDateSlotId);
     }
 
-    const [[previousSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
-    const jsonValue=(value)=>typeof value==='string'?value:JSON.stringify(value);
-    const priorSettingsJson=jsonValue(previousSettings.settings_json);
-    const priorKnowledgeJson=jsonValue(previousSettings.knowledge_json);
+    const previousSettings=await snapshotBusinessSettings(pool);
+    const jsonValue=encodeJson;
     let testSlotId;
     try {
       const testSettings={
         schedule:{intervalHours:6,timezone:'Asia/Jakarta',activeDays:[1,2,3,4,5,6,7],activeStart:'00:00',activeEnd:'00:00'},
-        priceMode:'OFF',gameWhitelist:['Mobile Legends'],brand:{name:'Toko Contoh',voice:'Santai'},
-        guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},
-        trackedLinks:{topup:'https://shop.example.test/topup',account:'https://shop.example.test/akun'},
+        hashtags:[],
         targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,automationSessionId:randomUUID(),
       };
-      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[
-        JSON.stringify(testSettings),JSON.stringify({brand:testSettings.brand,guardrails:testSettings.guardrails}),
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[
+        JSON.stringify(testSettings),JSON.stringify({}),JSON.stringify(ndiKnowledge()),
       ]);
       await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[testSettings.profileId,testSettings.targetAccountId]);
       // This is an explicitly isolated destructive-test database. Remove prior
@@ -323,7 +335,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       assert.equal(winners.length,1,'only one concurrent database claim may win');
       const payload={content:'scheduler persistence test',targets:[{account_id:testSettings.targetAccountId}]};
       const idempotencyKey=`restart-${randomUUID()}`;
-      await repo.savePreparedSlot(due.id,{requestPayload:payload,idempotencyKey,caption:payload.content,pillar:'topup'});
+      await repo.savePreparedSlot(due.id,{requestPayload:payload,idempotencyKey,caption:payload.content,pillar:'ndi'});
       await pool.execute('UPDATE slots SET claimed_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 11 MINUTE) WHERE id=?',[due.id]);
 
       await pool.end();
@@ -402,9 +414,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
     } finally {
       if (testSlotId) await deleteSlot(pool,testSlotId);
-      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[
-        priorSettingsJson,priorKnowledgeJson,previousSettings.automation_enabled,
-      ]);
+      await restoreBusinessSettings(pool,previousSettings);
     }
   }
   finally {
@@ -423,58 +433,63 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
   const { createPool } = require('../src/db');
   const { runMigrations } = require('../src/migrate');
   const { createRepository } = require('../src/repository');
-  const { contentSafetyHash, legacyContentSafetyHash } = require('../src/content-safety');
+  const { contentSafetyHash } = require('../src/content-safety');
   const pool = createPool(loadEnv());
   await runMigrations(pool);
-  const repo = createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });
-  const [[previous]] = await pool.execute('SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
+  const repo = createRepository(pool);
+  const previous = await snapshotBusinessSettings(pool);
+  const [[previousConfig]] = await pool.execute('SELECT * FROM integration_config WHERE id=1');
   const [previousFacts] = await pool.execute('SELECT service, summary_json, active, updated_at FROM service_facts');
-  const encode = (value) => typeof value === 'string' ? value : JSON.stringify(value);
   const sessionId = randomUUID();
+  const ctaUrl = 'https://cta.example.test/ndi';
+  const businessKnowledge = ndiKnowledge(ctaUrl);
   const settings = {
-    schedule: { intervalHours: 1, timezone: 'Asia/Jakarta' },
-    priceMode: 'ON', gameWhitelist: ['Mobile Legends'],
-    brand: { name: 'Toko Contoh', voice: 'Santai' },
-    guardrails: { approved: true, forbiddenClaims: [], approvedClaims: [] },
-    trackedLinks: {}, automationSessionId: sessionId, onboardingComplete: true,
+    schedule: { intervalMinutes: 60, timezone: 'Asia/Jakarta' }, hashtags: ['#NusaDataIndonesia'],
+    automationSessionId: sessionId, onboardingComplete: true,
     targetAccountId: 'integration-account', profileId: 'integration-profile',
   };
-  const knowledge = { brand: settings.brand, guardrails: settings.guardrails };
   try {
     await deleteSlots(pool);
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',
+      [JSON.stringify(settings), JSON.stringify({}), JSON.stringify(businessKnowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[settings.profileId,settings.targetAccountId]);
-    await pool.execute('DELETE FROM service_facts');
-    const cases = ['valid', 'changed', 'inactive', 'expired', 'settings', 'legacy', 'legacy_hash'];
+    const cases = ['valid', 'cta_edited', 'knowledge_changed', 'hashtags_changed', 'approval_revoked', 'missing_cta', 'legacy', 'bad_caption'];
     for (const [index, scenario] of cases.entries()) {
       await deleteSlots(pool);
-      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
-      await pool.execute("INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES ('topup',?,TRUE,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE summary_json=VALUES(summary_json),active=TRUE,updated_at=UTC_TIMESTAMP(3)", [JSON.stringify({ game: 'Mobile Legends', price: '30' })]);
-      if (scenario === 'expired') await pool.execute("UPDATE service_facts SET updated_at=DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 25 HOUR) WHERE service='topup'");
-      const [[fact]] = await pool.execute("SELECT updated_at FROM service_facts WHERE service='topup'");
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE WHERE id=1',
+        [JSON.stringify(settings), JSON.stringify({}), JSON.stringify(businessKnowledge)]);
       const id = randomUUID();
-      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'generating',?,?,1)", [id, new Date(Date.now() - 5000 - index), sessionId,settings.profileId,settings.targetAccountId]);
-      const payload = { content: 'Cerita pilihan pemain.', targets: [{ account_id: settings.targetAccountId }] };
+      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,cta_url) VALUES (?,?,?,'generating',?,?,1,?)",
+        [id, new Date(Date.now() - 5000 - index), sessionId,settings.profileId,settings.targetAccountId,scenario==='missing_cta'?null:ctaUrl]);
+      const body = scenario==='bad_caption'
+        ? 'NDI menyediakan layanan teknologi untuk organisasi.'
+        : 'NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n#NusaDataIndonesia';
+      const caption = `${body}\n${ctaUrl}`;
+      const payload = { content: caption, targets: [{ account_id: settings.targetAccountId }] };
       const currentSettings = await repo.getSettings();
-      const hash = scenario === 'legacy' ? null : scenario === 'legacy_hash' ? legacyContentSafetyHash(currentSettings) : contentSafetyHash(currentSettings);
+      const hash = scenario === 'legacy' ? null : contentSafetyHash(currentSettings);
       assert.equal(await repo.savePreparedSlot(id, {
-        requestPayload: payload, idempotencyKey: `test-${id}`, caption: payload.content, pillar: 'topup',
-        factBearing: false, factIds: [], factVersions: [{ id: 'topup', updatedAt: fact.updated_at }], contentSafetyHash: hash,
+        requestPayload: payload, idempotencyKey: `test-${id}`, caption: payload.content, pillar: 'ndi',
+        factBearing: false, factIds: [], factVersions: [], contentSafetyHash: hash,
       }), true, scenario);
-      if (scenario === 'changed') await pool.execute("UPDATE service_facts SET updated_at=DATE_ADD(updated_at, INTERVAL 1 SECOND) WHERE service='topup'");
-      if (scenario === 'inactive') await pool.execute("UPDATE service_facts SET active=FALSE WHERE service='topup'");
-      if (scenario === 'settings') await pool.execute("UPDATE settings SET knowledge_json=JSON_SET(knowledge_json,'$.brand.voice','Berbeza') WHERE id=1");
-      if (scenario === 'legacy_hash') await pool.execute("UPDATE settings SET settings_json=JSON_SET(JSON_REMOVE(settings_json,'$.schedule.intervalHours'),'$.schedule.intervalMinutes',15) WHERE id=1");
+      if (scenario === 'cta_edited') await pool.execute("UPDATE settings SET business_knowledge_json=JSON_SET(business_knowledge_json,'$.ctaUrl','https://new.example.test/changed') WHERE id=1");
+      if (scenario === 'knowledge_changed') await pool.execute("UPDATE settings SET business_knowledge_json=JSON_SET(business_knowledge_json,'$.services[0]','Changed service') WHERE id=1");
+      if (scenario === 'hashtags_changed') await pool.execute("UPDATE settings SET settings_json=JSON_SET(settings_json,'$.hashtags',JSON_ARRAY('#DataTeknologi')) WHERE id=1");
+      if (scenario === 'approval_revoked') await pool.execute('UPDATE settings SET business_knowledge_approved=FALSE WHERE id=1');
       const result = await repo.startPublishing(id, { now: new Date() });
-      assert.equal(result, ['valid', 'legacy_hash'].includes(scenario) ? true : 'stale_facts', scenario);
+      const expected = ['valid','cta_edited'].includes(scenario) ? true : scenario==='approval_revoked' ? false : 'stale_facts';
+      assert.equal(result, expected, scenario);
       const [[slot]] = await pool.execute('SELECT status FROM slots WHERE id=?', [id]);
-      assert.equal(slot.status, ['valid', 'legacy_hash'].includes(scenario) ? 'publishing' : 'ready', scenario);
+      assert.equal(slot.status, expected===true ? 'publishing' : 'ready', scenario);
     }
   } finally {
     await deleteSlots(pool);
     await pool.execute('DELETE FROM service_facts');
-    for (const fact of previousFacts) await pool.execute('INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES (?,?,?,?)', [fact.service, encode(fact.summary_json), fact.active, fact.updated_at]);
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1', [encode(previous.settings_json), encode(previous.knowledge_json), previous.automation_enabled]);
+    for (const fact of previousFacts) await pool.execute('INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES (?,?,?,?)', [fact.service, encodeJson(fact.summary_json), fact.active, fact.updated_at]);
+    await restoreBusinessSettings(pool,previous);
+    if(previousConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',
+      [previousConfig.version,previousConfig.profile_id,previousConfig.account_id,previousConfig.model,previousConfig.status,previousConfig.pending_profile_id,previousConfig.pending_account_id,previousConfig.pending_model,previousConfig.updated_by]);
+    else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.end();
   }
 });
@@ -484,17 +499,19 @@ test('MySQL fences a concurrent account switch against publication start', {skip
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');
   const {createRepository}=require('../src/repository');const {createConfigurationService}=require('../src/configuration');const {contentSafetyHash}=require('../src/content-safety');
   const config=loadEnv();const pool=createPool(config);await runMigrations(pool);
-  const [[priorSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
+  const priorSettings=await snapshotBusinessSettings(pool);
   const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);
   const version=Date.now();const sessionId=randomUUID();const profileId=`old-profile-${randomUUID()}`;const accountId=`old-account-${randomUUID()}`;
-  const settings={schedule:{intervalHours:1,timezone:'Asia/Jakarta'},brand:{name:'Toko Contoh',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
-  const knowledge={brand:settings.brand,guardrails:settings.guardrails};const id=randomUUID();const payload={content:'slot lama',targets:[{account_id:accountId}]};
+  const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
+  const knowledge=ndiKnowledge('https://cta.example.test/ndi');const id=randomUUID();
+  const caption=`NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n${knowledge.ctaUrl}`;
+  const payload={content:caption,targets:[{account_id:accountId}]};
   try{
     await deleteSlots(pool);
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
-    await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash) VALUES (?,?,?,'ready',?,?,?,?,?,'slot lama','topup',?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,JSON.stringify([]),JSON.stringify([]),contentSafetyHash(settings)]);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash,cta_url) VALUES (?,?,?,'ready',?,?,?,?,?,?,?,?,?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,caption,'ndi',JSON.stringify([]),JSON.stringify([]),contentSafetyHash({...settings,businessKnowledge:knowledge}),knowledge.ctaUrl]);
     const repository=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });const service=createConfigurationService({pool,config});
     const [started,switched]=await Promise.all([
       repository.startPublishing(id,{now:new Date()}),
@@ -510,7 +527,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
     await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);
+    await restoreBusinessSettings(pool,priorSettings);
     await pool.end();
   }
 });
@@ -520,16 +537,16 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');
   const {createRepository}=require('../src/repository');const {contentSafetyHash}=require('../src/content-safety');
   const config=loadEnv();let firstPool=createPool(config);let secondPool=createPool(config);
-  const [[priorSettings]]=await firstPool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
+  const priorSettings=await snapshotBusinessSettings(firstPool);
   const [[priorConfig]]=await firstPool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);
   const version=(Number(priorConfig?.version)||0)+10_000_000;const sessionId=randomUUID();const profileId=`interval-profile-${randomUUID()}`;const accountId=`interval-account-${randomUUID()}`;
-  const settings={schedule:{intervalMinutes:1,timezone:'Asia/Jakarta'},brand:{name:'Toko Contoh',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
-  const knowledge={brand:settings.brand,guardrails:settings.guardrails};const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
+  const settings={schedule:{intervalMinutes:1,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
+  const knowledge=ndiKnowledge();const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
   try{
     await runMigrations(firstPool);
     await deleteSlots(firstPool);
-    await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?),(?,?,?,'pending',?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version]);
     const firstRepository=createRepository(firstPool);const secondRepository=createRepository(secondPool);
@@ -537,8 +554,9 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
     assert.equal(claims.filter(Boolean).length,1);
     const claimed=claims.find(Boolean);const waitingId=claimed.id===firstId?secondId:firstId;
     assert.equal(claimed.status,'pending');
-    const payload={content:'prepared test content',targets:[{account_id:accountId}]};
-    await firstPool.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar='topup',fact_bearing=FALSE,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=?",[JSON.stringify(payload),`interval-${waitingId}`,payload.content,JSON.stringify([]),JSON.stringify([]),contentSafetyHash(settings),waitingId]);
+    const caption=`NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n${knowledge.ctaUrl}`;
+    const payload={content:caption,targets:[{account_id:accountId}]};
+    await firstPool.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar='ndi',fact_bearing=FALSE,fact_ids=?,fact_versions=?,content_safety_hash=?,cta_url=? WHERE id=?",[JSON.stringify(payload),`interval-${waitingId}`,payload.content,JSON.stringify([]),JSON.stringify([]),contentSafetyHash({...settings,businessKnowledge:knowledge}),knowledge.ctaUrl,waitingId]);
     assert.equal(await secondRepository.startPublishing(waitingId,{now}),'in_flight');
     const [[activeSlot]]=await firstPool.execute('SELECT status FROM slots WHERE id=?',[claimed.id]);
     const [[waitingSlot]]=await firstPool.execute('SELECT status,claimed_at,request_payload,idempotency_key FROM slots WHERE id=?',[waitingId]);
@@ -552,7 +570,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
     await firstPool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await firstPool.execute('DELETE FROM integration_config WHERE id=1');
-    await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);
+    await restoreBusinessSettings(firstPool,priorSettings);
     await firstPool.end();await secondPool.end();
   }
 });
@@ -561,11 +579,11 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   const {randomUUID}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
   const pool=createPool(loadEnv());await runMigrations(pool);
-  const [[priorSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const priorSettings=await snapshotBusinessSettings(pool);const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`cadence-profile-${randomUUID()}`;const accountId=`cadence-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+20_000_000;
-  const repository=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},brand:{name:'Toko Contoh',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge={brand:settings.brand,guardrails:settings.guardrails};
+  const repository=createRepository(pool);const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge=ndiKnowledge();
   try{
-    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     const intervals=[1,5,15,30,60,90,135];
     for(const intervalMinutes of intervals){
@@ -582,7 +600,7 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   }finally{
     await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
+    await restoreBusinessSettings(pool,priorSettings);await pool.end();
   }
 });
 
@@ -590,14 +608,14 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
   const {randomUUID}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
   const pool=createPool(loadEnv());await runMigrations(pool);
-  const [[priorSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
-  const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`edit-profile-${randomUUID()}`;const accountId=`edit-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+30_000_000;
-  const repository=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });const settings={schedule:{intervalMinutes:60,timezone:'UTC'},brand:{name:'Toko Contoh',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true,nextSlotAt:new Date(Date.now()+70*60_000).toISOString()};const knowledge={brand:settings.brand,guardrails:settings.guardrails};const slotId=randomUUID();const scheduledAt=new Date(Date.now()+10*60_000);
+  const priorSettings=await snapshotBusinessSettings(pool);const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const encode=encodeJson;const profileId=`edit-profile-${randomUUID()}`;const accountId=`edit-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+30_000_000;
+  const repository=createRepository(pool);const settings={schedule:{intervalMinutes:60,timezone:'UTC'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true,nextSlotAt:new Date(Date.now()+70*60_000).toISOString()};const knowledge=ndiKnowledge();const slotId=randomUUID();const scheduledAt=new Date(Date.now()+10*60_000);
   try{
-    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[slotId,scheduledAt,sessionId,profileId,accountId,version]);
-    await repository.saveSettings({schedule:{hours:0,minutes:5,timezone:'UTC'},priceMode:'OFF',brand:settings.brand,guardrails:settings.guardrails,gameWhitelist:[],hashtags:['#TokoContoh'],trackedLinks:{}},null);
+    await repository.saveSettings({schedule:{hours:0,minutes:5,timezone:'UTC'},hashtags:['#NusaDataIndonesia']},null);
     const [[afterSave]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');const afterSaveSettings=JSON.parse(encode(afterSave.settings_json));
     assert.equal(afterSaveSettings.schedule.intervalMinutes,5);
     assert.equal(afterSaveSettings.nextSlotAt,undefined,'schedule change clears only the future pointer');
@@ -612,6 +630,6 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
   }finally{
     await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
-    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
+    await restoreBusinessSettings(pool,priorSettings);await pool.end();
   }
 });

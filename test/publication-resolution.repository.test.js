@@ -119,7 +119,7 @@ test('automation re-enable scopes unresolved blockers to the configured target a
     beginTransaction: async () => {},
     query: async sql => {
       statements.push({ sql, params: [] });
-      if (sql.includes('settings_json,automation_enabled')) return [[{ settings_json: JSON.stringify({ profileId: 'profile-current', targetAccountId: 'account-current' }), automation_enabled: 0 }]];
+      if (sql.includes('business_knowledge_approved')) return [[{ settings_json: JSON.stringify({ profileId: 'profile-current', targetAccountId: 'account-current' }), business_knowledge_json: JSON.stringify(require('../src/business-knowledge').DEFAULT_NDI_KNOWLEDGE), business_knowledge_approved: 1, automation_enabled: 0 }]];
       if (sql.includes('integration_config')) return [[{ status: 'ACTIVE', profile_id: 'profile-current', account_id: 'account-current', model: 'vendor/model' }]];
       return [[]];
     },

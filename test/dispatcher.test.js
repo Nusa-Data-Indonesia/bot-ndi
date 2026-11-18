@@ -3,13 +3,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runDispatcher, pauseAutomation, maybeSendDailySummary, reconcileUnsettled, reconcileSwitch } = require('../src/dispatcher');
-const { contentSafetyHash, legacyContentSafetyHash } = require('../src/content-safety');
+const { contentSafetyHash } = require('../src/content-safety');
+const { DEFAULT_NDI_KNOWLEDGE } = require('../src/business-knowledge');
+
+const CTA_URL = 'https://nusadataindonesia.com';
+const NDI_CAPTION = 'Informasi yang tertata membantu tim memahami pola yang relevan. Mari diskusikan kebutuhan data dan solusi teknologi untuk organisasi Anda.';
+const NDI_SETTINGS = {
+  automationSessionId: 'session-1',
+  schedule: { intervalMinutes: 360, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' },
+  hashtags: ['#NusaDataIndonesia', '#TeknologiData'],
+  businessKnowledge: { ...DEFAULT_NDI_KNOWLEDGE, ctaUrl: CTA_URL },
+};
 
 function harness(overrides = {}) {
   const calls = [];
-  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1' };
+  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL };
   const repository = {
-    getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 6, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] }),
+    getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1', settings: NDI_SETTINGS, facts: [], history: [] }),
     ensureNextDueSlot: async () => ({ slot, created: true, skippedCount: 0 }),
     claimDueSlot: async () => slot,
     savePreparedSlot: async (id, data) => calls.push(['prepared', id, data]),
@@ -26,6 +36,36 @@ function harness(overrides = {}) {
     recordCancellation: async (id, data) => calls.push(['cancel', id, data]),
     ...overrides.repository,
   };
+  if (typeof overrides.repository?.getRuntimeState === 'function') {
+    const suppliedRuntimeState = overrides.repository.getRuntimeState;
+    repository.getRuntimeState = async (...args) => {
+      const supplied = await suppliedRuntimeState(...args) || {};
+      const suppliedSchedule = supplied.settings?.schedule || {};
+      const schedule = { ...NDI_SETTINGS.schedule, ...suppliedSchedule };
+      if (suppliedSchedule.intervalMinutes === undefined && Number.isSafeInteger(suppliedSchedule.intervalHours)) {
+        schedule.intervalMinutes = suppliedSchedule.intervalHours * 60;
+      }
+      delete schedule.intervalHours;
+      delete schedule.hours;
+      delete schedule.minutes;
+      return {
+        automationEnabled: true,
+        onboardingComplete: true,
+        businessKnowledgeApproved: true,
+        contentStrategyReady: true,
+        accountId: 'acct-1',
+        facts: [],
+        history: [],
+        ...supplied,
+        settings: {
+          ...NDI_SETTINGS,
+          ...(supplied.settings || {}),
+          schedule,
+          businessKnowledge: { ...NDI_SETTINGS.businessKnowledge, ...(supplied.settings?.businessKnowledge || {}) },
+        },
+      };
+    };
+  }
   const publisher = {
     publishNow: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }),
     getPost: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }),
@@ -36,8 +76,21 @@ function harness(overrides = {}) {
   return { calls, slot, repository, publisher };
 }
 
-const content = async () => ({ status: 'ready', text: 'Jom kongsi pilihan anda!', pillar: 'topup', factBearing: false, factIds: [] });
+const content = async () => ({ status: 'ready', text: `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`, pillar: 'ndi', factBearing: false, factIds: [] });
 const fixedClock = () => new Date('2026-11-05T04:00:00Z');
+
+test('keeps publication closed until the Phase B category and style engine is ready', async () => {
+  const rig = harness({ repository: { getRuntimeState: async () => ({ contentStrategyReady: false }) } });
+  let planningCalls = 0;
+  rig.repository.ensureNextDueSlot = async () => { planningCalls++; return { slot: rig.slot }; };
+  rig.repository.claimDueSlot = async () => { planningCalls++; return rig.slot; };
+
+  const result = await runDispatcher({ repository: rig.repository, publisher: rig.publisher, content, clock: fixedClock });
+
+  assert.equal(result.claimed, 0);
+  assert.equal(planningCalls, 0);
+  assert.equal(rig.calls.some(([kind]) => kind === 'prepared'), false);
+});
 
 test('dynamic dispatcher binds publication and both AI calls to the slot snapshot', async () => {
   const { slot, repository, publisher } = harness();
@@ -155,7 +208,7 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   let publishCalls = 0;
   publisher.publishNow = async (payload, key) => {
     publishCalls++;
-    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'topup', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings) }]);
+    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'ndi', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings) }]);
     return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
@@ -179,9 +232,9 @@ test('authoritative attempt persistence failure fails the slot before ready payl
 });
 
 test('dispatcher persists and publishes the exact final caption including hashtags', async () => {
-  const finalText = 'Silakan berbagi pilihan Anda!\nhttps://example.test/topup\n#TokoContoh';
+  const finalText = `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`;
   const { calls, repository, publisher } = harness();
-  const saved = async () => ({ status: 'ready', text: finalText, pillar: 'topup', factBearing: false, factIds: [] });
+  const saved = async () => ({ status: 'ready', text: finalText, pillar: 'ndi', factBearing: false, factIds: [] });
   let sentPayload;
   publisher.publishNow = async (payload) => { sentPayload = payload; return { id: 'post-hashtag', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content: saved, clock: fixedClock });
@@ -239,7 +292,7 @@ test('generation failure diagnostics are persisted and only allowlisted codes re
 });
 
 test('stale generation slot details appear as a safe Telegram diagnostic', async () => {
-  const { repository, publisher } = harness({ repository: {
+  const { calls, repository, publisher } = harness({ repository: {
     ensureNextDueSlot: async () => ({
       slot: null, created: false, skippedCount: 0,
       failedSlotIds: ['slot-stale'],
@@ -365,7 +418,7 @@ test('first active run atomically plans the first slot using persisted schedule 
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.claimed, 1);
   assert.equal(plan.timezone, 'Asia/Jakarta');
-  assert.deepEqual(plan.schedule, { intervalHours: 6, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
+  assert.deepEqual(plan.schedule, { intervalMinutes: 360, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
 });
 
 test('missed slots are recorded as skipped by the atomic planner and are not caught up', async () => {
@@ -431,11 +484,12 @@ test('daily summary is sent at 22:00 Indonesia time regardless of legacy schedul
   assert.deepEqual(calls[3], ['finish', { localDate: '2026-11-06', timezone: 'Asia/Jakarta', status: 'sent' }]);
 });
 
-test('prepared ready slot reuses persisted payload and idempotency key without generating again', async () => {
+test('prepared NDI slot reuses persisted payload and idempotency key without generating again', async () => {
   const { calls, repository, publisher } = harness();
-  const durablePayload = { content: 'Jom kongsi pilihan anda!\nTop-up ML.\nhttps://example.test/t', targets: [{ account_id: 'acct-1' }] };
+  const durableCaption = `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`;
+  const durablePayload = { content: durableCaption, targets: [{ account_id: 'acct-1' }] };
   const safetyHash = contentSafetyHash((await repository.getRuntimeState()).settings);
-  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'topup', factBearing: true, factIds: ['topup'], factVersions: [{ id: 'topup', updatedAt: '2026-11-05T03:00:00Z' }], contentSafetyHash: safetyHash });
+  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'ndi', factBearing: false, factIds: [], factVersions: [], contentSafetyHash: safetyHash });
   const generatedContent = async () => assert.fail('prepared content must not be regenerated');
   publisher.publishNow = async (payload, key) => {
     assert.equal(payload, durablePayload);
@@ -447,19 +501,19 @@ test('prepared ready slot reuses persisted payload and idempotency key without g
   assert.equal(calls.some((call) => call[0] === 'prepared'), false);
 });
 
-test('prepared legacy slot remains publishable after an interval configuration update', async () => {
+test('prepared NDI slot remains publishable after an interval configuration update', async () => {
   const { repository, publisher } = harness();
   const savedSettings = (await repository.getRuntimeState()).settings;
-  const payload = { content: 'Prepared before the interval change.', targets: [{ account_id: 'acct-1' }] };
+  const payload = { content: `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`, targets: [{ account_id: 'acct-1' }] };
   repository.claimDueSlot = async () => ({
-    id: 'legacy-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: payload,
-    idempotencyKey: 'legacy-key', caption: payload.content, pillar: 'topup', factBearing: false,
-    factIds: [], factVersions: [], contentSafetyHash: legacyContentSafetyHash(savedSettings),
+    id: 'ndi-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, requestPayload: payload,
+    idempotencyKey: 'ndi-key', caption: payload.content, pillar: 'ndi', factBearing: false,
+    factIds: [], factVersions: [], contentSafetyHash: contentSafetyHash(savedSettings),
   });
   const updatedSchedule = { ...savedSettings.schedule, intervalMinutes: 15 };
   delete updatedSchedule.intervalHours;
   repository.getRuntimeState = async () => ({
-    automationEnabled: true, onboardingComplete: true, accountId: 'acct-1',
+    automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1',
     settings: { ...savedSettings, schedule: updatedSchedule }, facts: [], history: [],
   });
   let sent;
@@ -469,16 +523,16 @@ test('prepared legacy slot remains publishable after an interval configuration u
   };
   const result = await runDispatcher({ repository, publisher, content: async () => assert.fail('legacy payload must not regenerate'), clock: fixedClock });
   assert.equal(result.published, 1);
-  assert.deepEqual(sent, { body: payload, key: 'legacy-key' });
+  assert.deepEqual(sent, { body: payload, key: 'ndi-key' });
 });
 
 test('legacy ready caption without safety snapshot is failed without publishing', async () => {
   const { calls, repository, publisher } = harness();
-  repository.claimDueSlot = async () => ({ id: 'old', automationSessionId: 'session-1', status: 'ready', requestPayload: { content: 'Lama', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'old-key', factBearing: true, factIds: ['topup'] });
+  repository.claimDueSlot = async () => ({ id: 'old', automationSessionId: 'session-1', status: 'ready', ctaUrl: null, requestPayload: { content: 'Lama', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'old-key', factBearing: true, factIds: ['legacy-topup'] });
   publisher.publishNow = async () => assert.fail('legacy facts must not be published');
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.failed, 1);
-  assert.ok(calls.some((entry) => entry[0] === 'activity' && entry[1].details.diagnosticCode === 'stale_facts'));
+  assert.ok(calls.some((entry) => entry[0] === 'activity' && entry[1].details.diagnosticCode === 'business_knowledge_review_required'));
 });
 
 test('repository freshness rejection fails prepared content before Tebar', async () => {
@@ -515,13 +569,13 @@ test('paused automation does not plan or claim a new slot', async () => {
 
 test('a claimed slot at night publishes despite legacy active hours', async () => {
   const { repository, publisher } = harness();
-  repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z' });
-  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 1, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
+  repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z', ctaUrl: CTA_URL });
+  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1', settings: { ...NDI_SETTINGS, schedule: { ...NDI_SETTINGS.schedule, intervalMinutes: 60, activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
   let publishes = 0;
   publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.skipped, 0);
-  assert.equal(result.published, 1);
+  assert.equal(result.published, 1, JSON.stringify(result));
   assert.equal(publishes, 1);
 });
 
@@ -615,12 +669,12 @@ test('unknown publish without provider ID is not replayed and blocks new slots',
 
 test('unrelated account unsettled slots do not block dispatch for the active account', async () => {
   const scopes = [];
-  const { repository, publisher } = harness({ repository: {
+  const { calls, repository, publisher } = harness({ repository: {
     getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, profileId: 'profile-current', accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 6, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] }),
     listUnsettledSlots: async (scope) => { scopes.push(scope); return scope?.accountId === 'acct-1' ? [] : [{ id: 'other-slot', profileId: 'profile-other', accountId: 'acct-other', providerPostId: 'other-post' }]; },
   } });
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
-  assert.equal(result.published, 1);
+  assert.equal(result.published, 1, JSON.stringify({ result, scopes, calls }));
   assert.ok(scopes.length >= 2);
   assert.ok(scopes.every((scope) => scope?.profileId === 'profile-current' && scope?.accountId === 'acct-1'));
 });
@@ -789,7 +843,7 @@ test('definitive Tebar authentication failure stores a hold for only the immutab
     listActiveProviderHolds: async () => [],
   } });
   Object.assign(slot, { profileId: 'profile-old', accountId: 'acct-old' });
-  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, profileId: 'profile-old', accountId: 'acct-old', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 6, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] });
+  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, profileId: 'profile-old', accountId: 'acct-old', settings: { ...NDI_SETTINGS, automationSessionId: 'session-1' }, facts: [], history: [] });
   publisher.publishNow = async () => { throw Object.assign(new Error('do-not-log-this-secret'), { code: 'unauthorized', status: 401, unknownOutcome: false, retryable: false, transportCode: 'ERR_BAD_REQUEST', timedOut: false }); };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock, logger: { warn: (event, details) => logs.push({ event, details }) } });
   assert.equal(result.failed, 1);
@@ -926,8 +980,10 @@ test('dispatcher refreshes account and onboarding state after claiming a newer s
   const latestState = {
     automationEnabled: true,
     onboardingComplete: true,
+    contentStrategyReady: true,
     accountId: 'acct-2',
-    settings: { automationSessionId: 'session-2', schedule: { intervalHours: 1, timezone: 'Asia/Jakarta', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } },
+    businessKnowledgeApproved: true,
+    settings: { ...NDI_SETTINGS, automationSessionId: 'session-2', schedule: { ...NDI_SETTINGS.schedule, intervalMinutes: 60 } },
     facts: [],
     history: [],
   };
@@ -944,7 +1000,7 @@ test('dispatcher refreshes account and onboarding state after claiming a newer s
   };
   const freshContent = async (context) => {
     generatedForAccount = context.accountId;
-    return { status: 'ready', text: 'Jom kongsi pilihan anda!', pillar: 'topup', factBearing: false, factIds: [] };
+    return { status: 'ready', text: `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`, pillar: 'ndi', factBearing: false, factIds: [] };
   };
   const result = await runDispatcher({ repository, publisher, content: freshContent, clock: fixedClock });
   assert.equal(generatedForAccount, 'acct-2');
@@ -967,7 +1023,7 @@ test('confirmed success notice includes actual caption and verified provider per
   const { repository, publisher } = harness({ publisher: { publishNow: async () => ({ id: 'ok', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published', permalink: 'https://www.threads.net/@example/post/123', publishedAt: '2026-11-05T04:01:00Z' }] }) } });
   const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (...args) => notices.push(args) }, clock: fixedClock });
   assert.equal(result.published, 1);
-  assert.match(notices[0][0], /Jom kongsi pilihan anda!/);
+  assert.match(notices[0][0], /Informasi yang tertata membantu tim memahami pola/);
   assert.match(notices[0][0], /https:\/\/www\.threads\.net\/@example\/post\/123/);
   assert.match(notices[0][0], /Slot ID: slot-1$/);
 });
