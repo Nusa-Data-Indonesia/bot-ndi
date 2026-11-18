@@ -50,7 +50,7 @@ Branch kandidat: `codex/ndi-abc-integration`, dibuat dari `origin/main` `a9858d2
 ### Klasifikasi hasil
 
 - **PASS:** semua quality gates lokal di atas; 73 requirement terpetakan; test matrix lokal T-01–T-30 diperiksa terhadap source/tests.
-- **FAIL:** 0 pada rerun final. Kegagalan harness awal dijelaskan di atas dan tidak dihitung sebagai pass.
+- **FAIL:** tidak ada test/runtime failure pada rerun final. `git diff --check origin/main...HEAD` hanya menandai trailing spaces hard-break Markdown pada SSOT yang sudah ada dalam riwayat phase branch; file SSOT identik dengan salinan lokal dan tidak diubah. Diff dokumentasi yang ditambahkan pada kandidat lulus `git diff --check HEAD~1 HEAD`. Kegagalan harness awal dijelaskan di atas dan tidak dihitung sebagai pass.
 - **SKIPPED:** 6 test migration DB pada `npm test` karena membutuhkan schema disposable khusus; masing-masing lulus saat dijalankan terpisah.
 - **NOT_EXECUTED:** backup/restore (operator risk acceptance), provider connectivity, jalur publikasi nyata/Threads, migrasi produksi, dan deployment.
 
