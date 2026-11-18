@@ -1,6 +1,6 @@
 # [Historical] Audit UI/UX BotMerzz
 
-> Audit ini mendahului isolasi aplikasi menjadi Bot NDI. Temuan dan identitas UI di dalamnya bukan konfigurasi aktif. Lihat [UI Bot NDI saat ini](../public/index.html) dan [laporan readiness](PRE-DEPLOYMENT-READINESS.md).
+> Audit ini mendahului isolasi aplikasi menjadi Bot NDI. Temuan dan identitas UI di dalamnya bukan konfigurasi aktif. Lihat [UI Bot NDI saat ini](../public/index.html) dan [audit codebase Fase A](ndi-codebase-audit.md).
 
 Tanggal audit awal: 8 November 2026
 

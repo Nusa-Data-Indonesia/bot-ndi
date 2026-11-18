@@ -31,4 +31,6 @@ WHERE st.automation_enabled=TRUE
 
 UPDATE settings
 SET settings_json=JSON_SET(COALESCE(settings_json, JSON_OBJECT()), '$.schedule.intervalHours', 1)
-WHERE id=1;
+WHERE id=1
+  AND JSON_CONTAINS_PATH(COALESCE(settings_json, JSON_OBJECT()), 'one',
+    '$.schedule.intervalMinutes', '$.schedule.intervalHours', '$.schedule.hours', '$.schedule.minutes')=0;

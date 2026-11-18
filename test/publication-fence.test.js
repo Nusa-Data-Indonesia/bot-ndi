@@ -4,29 +4,40 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runDispatcher } = require('../src/dispatcher');
 const { createRepository } = require('../src/repository');
+const { DEFAULT_NDI_KNOWLEDGE } = require('../src/business-knowledge');
 
 const now = new Date('2026-11-05T04:00:00.000Z');
+const ctaUrl = 'https://nusadataindonesia.com';
+const safeCaption = 'Informasi yang tertata membantu tim memahami pola yang relevan. Mari diskusikan kebutuhan data dan solusi teknologi untuk organisasi Anda.\n#NusaDataIndonesia #TeknologiData\n' + ctaUrl;
 const settings = {
   automationSessionId: 'session-1',
   profileId: 'profile-1',
   targetAccountId: 'account-1',
   schedule: {
-    intervalHours: 6,
+    intervalMinutes: 360,
     timezone: 'Asia/Jakarta',
     activeDays: [1, 2, 3, 4, 5, 6, 7],
     activeStart: '00:00',
     activeEnd: '23:59',
   },
+  hashtags: ['#NusaDataIndonesia', '#TeknologiData'],
+  businessKnowledge: { ...DEFAULT_NDI_KNOWLEDGE, ctaUrl },
+};
+const contentStrategy = {
+  category: { id: 'category-1', slug: 'edukasi-data-teknologi', name: 'Edukasi Data & Teknologi', guidance: 'Jelaskan satu konsep teknologi dengan bahasa yang mudah dipahami.' },
+  style: { id: 'style-1', slug: 'korporat-profesional', name: 'Korporat profesional', instructions: 'Gunakan bahasa profesional, jelas, dan ringkas.' },
 };
 
 function raceHarness({ revokeAfterSessionCheck = false } = {}) {
-  const state = { automationEnabled: true, onboardingComplete: true, accountId: 'account-1', profileId: 'profile-1', settings: { ...settings }, facts: [], history: [] };
+  const state = { automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'account-1', profileId: 'profile-1', settings: { ...settings }, facts: [], history: [] };
   const slot = {
     id: 'slot-1',
     scheduledAt: now.toISOString(),
     automationSessionId: 'session-1',
     profileId: 'profile-1',
     accountId: 'account-1',
+    ctaUrl,
+    contentStrategy,
     status: 'generating',
   };
   const calls = [];
@@ -71,7 +82,7 @@ async function dispatch(rig) {
   return runDispatcher({
     repository: rig.repository,
     publisher: rig.publisher,
-    content: async () => ({ status: 'ready', text: 'A safe test post', pillar: 'topup', factBearing: false, factIds: [] }),
+    content: async () => ({ status: 'ready', text: safeCaption, pillar: 'ndi', factBearing: false, factIds: [] }),
     clock: () => now,
   });
 }

@@ -117,18 +117,31 @@ test('automation re-enable scopes unresolved blockers to the configured target a
   const statements = [];
   const connection = {
     beginTransaction: async () => {},
-    query: async sql => {
-      statements.push({ sql, params: [] });
-      if (sql.includes('settings_json,automation_enabled')) return [[{ settings_json: JSON.stringify({ profileId: 'profile-current', targetAccountId: 'account-current' }), automation_enabled: 0 }]];
+    query: async (sql, params = []) => {
+      statements.push({ sql, params });
+      if (sql.includes('business_knowledge_approved')) return [[{ settings_json: JSON.stringify({ profileId: 'profile-current', targetAccountId: 'account-current' }), business_knowledge_json: JSON.stringify(require('../src/business-knowledge').DEFAULT_NDI_KNOWLEDGE), business_knowledge_approved: 1, automation_enabled: 0 }]];
+      if (sql.includes('content_categories') && sql.includes('content_styles')) return [[{ category_count: 8, style_count: 7 }]];
+      if (sql.includes('content_strategy_settings')) return [[{ enabled: 1 }]];
+      if (sql.includes("status='published'") && sql.includes('provider_published_at IS NULL')) return [[]];
+      if (sql.includes('GROUP BY provider_published_at')) return [[]];
       if (sql.includes('integration_config')) return [[{ status: 'ACTIVE', profile_id: 'profile-current', account_id: 'account-current', model: 'vendor/model' }]];
+      if (sql.includes('SELECT id FROM slots')) return [[{ id: 'relevant-blocker' }]];
       return [[]];
     },
-    execute: async (sql, params) => { statements.push({ sql, params }); return [[{ id: 'relevant-blocker' }]]; },
+    execute: async (sql, params) => {
+      statements.push({ sql, params });
+      if (sql.includes('content_categories') && sql.includes('content_styles')) return [[{ category_count: 8, style_count: 7 }]];
+      if (sql.includes('content_strategy_settings')) return [[{ enabled: 1 }]];
+      if (sql.includes("status='published'") && sql.includes('provider_published_at IS NULL')) return [[]];
+      if (sql.includes('GROUP BY provider_published_at')) return [[]];
+      if (sql.includes('SELECT id FROM slots')) return [[{ id: 'relevant-blocker' }]];
+      return [{ affectedRows: 1 }];
+    },
     rollback: async () => {}, commit: async () => {}, release: () => {},
   };
   const repository = createRepository({ execute: async () => { throw new Error('unexpected pool query'); }, getConnection: async () => connection });
   await assert.rejects(repository.setAutomationEnabled(true), error => error.code === 'RECONCILIATION_REQUIRED');
-  const blockerQuery = statements.find(({ sql }) => sql.includes('SELECT id FROM slots'));
+  const blockerQuery = statements.find(({ sql }) => sql.includes('tebar_profile_id IS NULL OR tebar_account_id IS NULL'));
   assert.deepEqual(blockerQuery.params, ['profile-current', 'account-current']);
   assert.match(blockerQuery.sql, /tebar_profile_id IS NULL OR tebar_account_id IS NULL/);
   assert.match(blockerQuery.sql, /tebar_profile_id=\? AND tebar_account_id=\?/);

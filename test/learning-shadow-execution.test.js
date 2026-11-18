@@ -2,22 +2,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createLearningShadowExecutionService } = require('../src/learning-shadow-execution');
+const { DEFAULT_NDI_KNOWLEDGE } = require('../src/business-knowledge');
 
 function fixture(overrides = {}) {
   const calls=[];
   const context={
-  settings:{brand:{name:'Bot NDI',voice:'Santai',contentDirection:'Pilih sudut kreatif.'},gameWhitelist:['Mobile Legends'],hashtags:['#BotNDI'],trackedLinks:{topup:'https://shop.example.test/topup',account:'https://shop.example.test/account'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[],hookVocabulary:[]},priceMode:'OFF',schedule:{}},
+  settings:{businessKnowledge:DEFAULT_NDI_KNOWLEDGE,hashtags:['#NusaDataIndonesia'],schedule:{}},
     facts:[],history:[{id:'old',status:'published',pillar:'topup',caption:'Pemain biasanya berbincang strategi.',completedAt:'2026-11-09T00:00:00.000Z',factBearing:false}],
+    businessKnowledgeApproved:true,
   };
   const repository={getRuntimeState:async()=>structuredClone(context)};
   const service=createLearningShadowExecutionService({
     store:{acquireAdmission:async()=>({assertHealthy:async()=>{},release:async()=>{}}),start:async()=>`s${calls.length+1}`,finish:async()=>true},
     repository,
     configuration:{getActive:async()=>({model:'provider/model',version:12,status:'ACTIVE'})},
-    learningStore:{getApprovedRuleVersions:async(ids)=>ids.map((id)=>({id,version:3,instruction:'Gunakan pengamatan gamer.',productCategory:'account',contentTopic:'all',decision:'approved'}))},
+    learningStore:{getApprovedRuleVersions:async(ids)=>ids.map((id)=>({id,version:3,instruction:'Jelaskan manfaat dengan contoh yang diberi label ilustrasi.',productCategory:'ndi',contentTopic:'all',decision:'approved'}))},
     providerForModel:async(model)=>{calls.push({provider:model});return async()=>'';},
     generatorSampling:{temperature:0.4,topP:0.9},
-    allowedCtaHosts:['example.test'],
     generatePostImpl:async(scenario,options)=>{
       calls.push({scenario,options});
       await options.generate({system:'system',user:'prompt',maxTokens:100});

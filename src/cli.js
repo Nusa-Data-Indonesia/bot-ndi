@@ -57,7 +57,7 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     await runMigrations(pool);
-    const repository = createRepository(pool, { allowedCtaHosts: config.approvedCtaHosts });
+    const repository = createRepository(pool);
     const attemptLifecycle = require('./generation-attempts').createGenerationAttemptStore(pool);
     const learning = require('./learning').createLearningStore(pool);
     const learningFlags = {
@@ -67,18 +67,9 @@ async function main(argv = process.argv.slice(2)) {
       promptIntegrationEnabled: config.learningPromptIntegrationEnabled,
       shadowEnabled: config.learningShadowEnabled,
     };
-    let learningExecutionPool; let learningExecutionStore; let attributionStore;
     const contentWithLearning = (context, deps) => {
-      const learningEnabled = config.learningRetrievalEnabled || config.learningPromptIntegrationEnabled;
-      if (learningEnabled && !learningExecutionPool) {
-        learningExecutionPool = createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
-        learningExecutionStore = require('./learning').createLearningStore(learningExecutionPool);
-        attributionStore = require('./learning-attribution').createLearningAttributionStore(learningExecutionPool);
-      }
       return generatePost(context, { ...deps, attemptLifecycle, captureFailure, recordOutcome,
         generatorSampling: config.openRouter.generatorSampling,
-        allowedCtaHosts: config.approvedCtaHosts,
-        ...(learningEnabled ? { learningStore: learningExecutionStore, attributionStore } : {}),
         learningFlags,
         onLearningError: (code) => logger.info('learning.execution_degraded', { code }),
       });
@@ -109,13 +100,12 @@ async function main(argv = process.argv.slice(2)) {
       if (!learningShadowPool) {
         learningShadowPool = createPool({ ...config, db: { ...config.db, connectionLimit: 2 } });
         learningShadowStore = require('./learning-shadow').createLearningShadowStore(learningShadowPool);
-        const shadowRepository = createRepository(learningShadowPool, { allowedCtaHosts: config.approvedCtaHosts });
+        const shadowRepository = createRepository(learningShadowPool);
         const shadowConfiguration = createConfigurationService({ pool: learningShadowPool, config });
         const shadowLearningStore = require('./learning').createLearningStore(learningShadowPool);
         learningShadowExecution = require('./learning-shadow-execution').createLearningShadowExecutionService({
           store: learningShadowStore, repository: shadowRepository, configuration: shadowConfiguration,
           learningStore: shadowLearningStore,
-          allowedCtaHosts: config.approvedCtaHosts,
           providerForModel: async (model) => {
             assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
             if (!config.openRouter.apiKey) throw Object.assign(new Error('OPENROUTER_NOT_CONFIGURED'), { code: 'OPENROUTER_NOT_CONFIGURED', status: 503 });
@@ -172,7 +162,7 @@ async function main(argv = process.argv.slice(2)) {
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: contentWithLearning, timezone: state.settings?.schedule?.timezone || config.timezone, allowedCtaHosts: config.approvedCtaHosts });
+        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: contentWithLearning, timezone: /** @type {{ schedule?: { timezone?: string } }} */ (state.settings || {}).schedule?.timezone || config.timezone });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Bot NDI automation: system_error. Periksa status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
@@ -182,7 +172,6 @@ async function main(argv = process.argv.slice(2)) {
         await pool.end();
         if (capturePool) await endOptionalPoolBounded(capturePool);
         if (outcomePool) await endOptionalPoolBounded(outcomePool);
-        if (learningExecutionPool) await endOptionalPoolBounded(learningExecutionPool);
       }
       return;
     }
@@ -224,6 +213,7 @@ async function main(argv = process.argv.slice(2)) {
     services.configurationValidators = require('./configuration-providers').createConfigurationValidators({
       config, enabled: config.externalIntegrationsEnabled,
     });
+    services.synchronizeNdiWebsite = require('./website-knowledge-sync').createManualWebsiteSyncService({ repository, logger });
     services.aiConfigured = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
     const telegram = config.externalIntegrationsEnabled === true && config.telegram.botToken && config.telegram.chatId
       ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: true }) : null;
@@ -275,6 +265,32 @@ async function main(argv = process.argv.slice(2)) {
       };
       services.flushNotifications = () => notifier.flush();
     }
+    const proposalJobAvailable = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
+    services.categoryProposalJobAvailable = proposalJobAvailable;
+    let categoryProposalScheduler = null;
+    const proposalRunner = require('./category-proposals').createCategoryProposalRunner({
+      repository,
+      logger,
+      notifier,
+      generate: async (request, model) => {
+        assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
+        const generate = await generatorForModel(model);
+        return generate(request);
+      },
+    });
+    services.setCategoryProposalJobEnabled = async (enabled) => {
+      if (enabled && !proposalJobAvailable) throw Object.assign(new Error('EXTERNAL_INTEGRATIONS_DISABLED'), { code: 'EXTERNAL_INTEGRATIONS_DISABLED', status: 503 });
+      if (!enabled) {
+        if (categoryProposalScheduler) await categoryProposalScheduler.stop();
+        return { enabled: false };
+      }
+      if (!categoryProposalScheduler) categoryProposalScheduler = createScheduler({ intervalMs: 60_000, logger, run: proposalRunner });
+      categoryProposalScheduler.start({ runImmediately: false });
+      return { enabled: true };
+    };
+    if (proposalJobAvailable && (await repository.getContentStrategyState()).proposalSettings?.enabled === true) {
+      await services.setCategoryProposalJobEnabled(true);
+    }
     services.pauseAutomation = async ({ adminId }) => {
       if (!isExternalIntegrationsEnabled(config)) {
         await repository.setAutomationEnabled(false, adminId);
@@ -297,8 +313,7 @@ async function main(argv = process.argv.slice(2)) {
         notifier,
         logger,
         content: contentWithLearning,
-        timezone: state.settings?.schedule?.timezone || config.timezone,
-        allowedCtaHosts: config.approvedCtaHosts,
+        timezone: /** @type {{ schedule?: { timezone?: string } }} */ (state.settings || {}).schedule?.timezone || config.timezone,
       });
     };
     if (canStartPublisherScheduler(config)) {
@@ -337,16 +352,17 @@ async function main(argv = process.argv.slice(2)) {
       const hardStop = setTimeout(() => process.exit(1), 200000).unref();
       captureFailure?.stop?.(); recordOutcome?.stop?.();
       retentionScheduler?.halt?.();
+      void categoryProposalScheduler?.stop?.();
       void scheduler?.stop();
       const learningPoolsClosed = closeLearningOptionalPools();
       server.close(async () => {
         try {
           await scheduler?.stop();
+          await categoryProposalScheduler?.stop?.();
           await pool.end();
           if (capturePool) await endOptionalPoolBounded(capturePool);
           if (outcomePool) await endOptionalPoolBounded(outcomePool);
           if (retentionPool) await endOptionalPoolBounded(retentionPool);
-          if (learningExecutionPool) await endOptionalPoolBounded(learningExecutionPool);
           await learningPoolsClosed;
           clearTimeout(hardStop);
           process.exit(0);

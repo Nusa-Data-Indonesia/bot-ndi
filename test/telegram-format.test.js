@@ -39,7 +39,8 @@ test('daily success rate excludes unconfirmed outcomes and does not claim a next
   const text = formatDailyReport({ date: '2026-11-08', published: 4, failed: 1, unknown: 2, categories: { topup: 4 }, automationEnabled: false, nextAt: '2026-11-09T01:00:00Z', affectedSlotIds: [slotId] });
   assert.match(text, /Success Rate: 80%/);
   assert.match(text, /Belum pasti: 2/);
-  assert.match(text, /Top-up: 4/);
+  assert.match(text, /Perusahaan: Nusa Data Indonesia/);
+  assert.doesNotMatch(text, /Top-up|game|Kedai Merzz/i);
   assert.doesNotMatch(text, /Posting Berikutnya/);
   assert.ok(text.endsWith(`Slot ID: ${slotId}`));
 });

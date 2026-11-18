@@ -23,6 +23,18 @@ The account/profile pair changes atomically. All app instances use the database 
 
 New slots snapshot profile ID, account ID, and configuration version when created; model and model version are captured when generation begins. The exact outbound body and idempotency key are persisted before sending. Status checks and webhook matching use the slot's original account and profile, including after a change. Existing slots without an unambiguous profile/account snapshot are not assigned the current target automatically.
 
+## NDI business knowledge and CTA
+
+Migrations `021`–`023` add NDI knowledge, its explicit approval state, archived copies of prior settings/knowledge, per-slot CTA and content-strategy snapshots, provider publish timestamps, and manual website-sync proposals/runs. They do not change the automation flag, session, schedule interval, integration credentials, or slot status. Legacy knowledge is not implicitly approved. Admin review is required before generation can pass readiness; content strategy has a separate explicit approval gate.
+
+The admin's **Website Resmi / CTA URL** is an HTTPS URL and may use any valid hostname. The marketing CTA is separate from the fixed NDI website-sync origin `https://nusadataindonesia.com/`. Saving a CTA never fetches or probes its destination. The website origin is contacted only after an authenticated administrator explicitly requests a sync; fetched information is untrusted and stored as per-item proposals until individually reviewed. A slot captures the CTA in the same transaction that claims it for generation; all retries and the persisted publish payload use that snapshot. A later edit applies to newly claimed slots only. The final caption must end with the exact slot URL, pass the NDI content/claim checks, and remain within 500 characters immediately before publication. Legacy ready slots without a valid NDI safety hash and CTA snapshot fail closed; `publishing` and `unknown` slots retain their existing status and reconciliation path.
+
+## Content strategy and website proposals
+
+The **Strategi Konten** dashboard manages seeded categories and styles, their active/archive state, explicit strategy approval, and AI category-proposal settings. Strategy changes require automation to be paused. The proposal worker defaults OFF, runs separately from publishing, delays its first run by the configured 30–365 day interval, and never activates a suggested category without admin approval.
+
+The **Konten** dashboard can request a manual Website NDI sync. The route is authenticated and CSRF-protected. It reads the fixed official origin, records bounded additions/edits/removals as pending proposals, and never writes the fetched text directly to generation knowledge. Review each proposal independently. If manual knowledge changes after sync, approval returns a version conflict and preserves the newer manual value. A failed fetch or parse leaves approved knowledge unchanged.
+
 ## Change a model or roll back
 
 Use the searchable catalog in Integrasi, or enter an OpenRouter model ID manually. The backend queries OpenRouter metadata and checks text input/output and parameters required by the application, including `temperature` and `top_p` when configured. A successful metadata check does not guarantee future provider availability, account permissions, credit, or semantic-audit quality. If validation is unavailable or fails, the previous model remains active. See [OpenRouter model metadata](https://openrouter.ai/docs/api/api-reference/models/get-model).

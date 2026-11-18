@@ -3,6 +3,7 @@ const assert=require('node:assert/strict');
 const http=require('node:http');
 const {createHmac}=require('node:crypto');
 const {createServer}=require('../src/server');
+const {DEFAULT_NDI_KNOWLEDGE}=require('../src/business-knowledge');
 
 function request(server,path,{method='GET',headers={},body}={}){return new Promise((resolve,reject)=>{const address=server.address();const req=http.request({host:'127.0.0.1',port:address.port,path,method,headers:{...(body?{'content-type':'application/json'}:{}),...headers}},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:data}));});req.setTimeout(3000,()=>req.destroy(new Error(`HTTP timeout ${method} ${path}`)));req.on('error',reject);if(body)req.write(body);req.end();});}
 function closeServer(server){return new Promise(resolve=>{server.close(resolve);server.closeAllConnections?.();});}
@@ -16,7 +17,7 @@ test('proxy trust is scoped to the configured ingress IP',()=>{
 
 test('health, dashboard auth, static UI, same-origin login, CSRF and logout are enforced',async t=>{
   let token='';let logoutCalls=0;const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
-  const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},brand:{},guardrails:{}},facts:[],history:[],automationEnabled:false}),listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>x,saveFact:async()=>({}),setAutomationEnabled:async()=>{},};
+  const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},hashtags:[],businessKnowledge:DEFAULT_NDI_KNOWLEDGE},businessKnowledge:DEFAULT_NDI_KNOWLEDGE,businessKnowledgeApproved:false,contentStrategyReady:false,contentStrategyReason:'Penerbitan menunggu mesin kategori dan gaya konten Fase B.',facts:[],history:[],automationEnabled:false}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>({knowledge:x,approved:true}),setAutomationEnabled:async()=>{},};
   const auth={login:async()=>({token:'a'.repeat(43),csrfToken:'b'.repeat(43),expiresAt:new Date(Date.now()+3600000),admin:{id:1,email:'x@example.test'}}),authenticate:async value=>value===token?{admin:{id:1,email:'x@example.test'},csrfToken:'b'.repeat(43)}:null,logout:async value=>{assert.equal(value,'a'.repeat(43));logoutCalls++;token='';}};
   const app=createServer({config,repository,auth,services:{getProviderStatus:async()=>({connected:false}),getClickMetric:async()=>({available:true,value:12,reason:null}),schedulerStatus:()=>({enabled:true,lastErrorCode:'INTERNAL_DETAIL'})}});
   const server=require('node:http').createServer(app);const listening=new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});server.listen(0,'127.0.0.1');await listening;t.after(()=>closeServer(server));
@@ -24,17 +25,17 @@ test('health, dashboard auth, static UI, same-origin login, CSRF and logout are 
   assert.equal((await request(server,'/health/live')).status,200);const ready=await request(server,'/health/ready');assert.equal(ready.status,200);assert.deepEqual(JSON.parse(ready.body),{status:'ready'});
   const malformedCookie=await request(server,'/api/session',{headers:{cookie:'bot_ndi_admin=%E0%A4%A'}});assert.equal(malformedCookie.status,200);assert.deepEqual(JSON.parse(malformedCookie.body),{authenticated:false});
   assert.equal((await request(server,'/api/dashboard')).status,401);
-  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="hours"[^>]*min="0"/);assert.match(staticPage.body,/name="minutes"[^>]*min="0"[^>]*max="59"/);assert.match(staticPage.body,/Minimal 1 menit/);assert.match(staticPage.body,/name="hashtags"/);assert.match(staticPage.body,/name="contentDirection"/);assert.match(staticPage.body,/name="hookVocabulary"/);assert.match(staticPage.body,/Kosakata hook yang disarankan/);assert.doesNotMatch(staticPage.body,/Hook yang dibuat tetap harus memakai kosakata yang disetujui|Arahan yang memerlukan kata lain dapat ditolak/i);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00 WIB/);
+  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="hours"[^>]*min="0"/);assert.match(staticPage.body,/name="minutes"[^>]*min="0"[^>]*max="59"/);assert.match(staticPage.body,/Minimal 1 menit/);assert.match(staticPage.body,/name="hashtags"/);assert.match(staticPage.body,/name="companyName"/);assert.match(staticPage.body,/name="ctaUrl"/);assert.match(staticPage.body,/Website Resmi \/ CTA URL/);assert.doesNotMatch(staticPage.body,/name="gameWhitelist"|name="priceMode"|name="trackedTopup"|name="trackedAccount"|Tautan top-up berpelacak|Game top-up yang disetujui/i);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00 WIB/);
   assert.equal((await request(server,'/api/session/login',{method:'POST',headers:{origin:'https://evil.test'},body:'{}'})).status,403);
   const login=await request(server,'/api/session/login',{method:'POST',headers:{origin:config.baseUrl},body:JSON.stringify({email:'x',password:'y'})});assert.equal(login.status,200);token='a'.repeat(43);
   const cookie=login.headers['set-cookie'][0].split(';')[0];
   const dashboard=await request(server,'/api/dashboard',{headers:{cookie}});assert.equal(dashboard.status,200);assert.deepEqual(JSON.parse(dashboard.body).metrics.clicks,{available:true,value:12,reason:null});
   const onboarding=JSON.parse(dashboard.body).onboarding;
-  assert.deepEqual(onboarding.filter(item=>item.required).map(item=>item.key),['brand','links','hashtags','thread','ai']);
-  assert.ok(onboarding.filter(item=>!item.required).every(item=>item.required===false&&['games','guardrails','facts'].includes(item.key)));
-  const vocabulary=['  Cerita pengalaman  ','cerita PENGALAMAN','Sembang santai'];
-  const knowledge=await request(server,'/api/knowledge',{method:'PUT',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:JSON.stringify({guardrails:{approved:true,hookVocabulary:vocabulary}})});
-  assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).guardrails.hookVocabulary,['Cerita pengalaman','Sembang santai']);
+  assert.deepEqual(onboarding.filter(item=>item.required).map(item=>item.key),['contentStrategy','knowledge','thread','ai']);
+  assert.equal(onboarding[0].complete,false);
+  assert.ok(onboarding.every(item=>item.required===true));
+  const knowledge=await request(server,'/api/knowledge',{method:'PUT',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:JSON.stringify({...DEFAULT_NDI_KNOWLEDGE,ctaUrl:'https://portfolio.example.test/ndi'})});
+  assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).knowledge.services,DEFAULT_NDI_KNOWLEDGE.services);assert.equal(JSON.parse(knowledge.body).knowledge.ctaUrl,'https://portfolio.example.test/ndi');
   const badCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'wrong'},body:'{}'});assert.equal(badCsrf.status,403);
   const nonAsciiCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'é'+'b'.repeat(42)},body:'{}'});assert.equal(nonAsciiCsrf.status,403);assert.deepEqual(JSON.parse(nonAsciiCsrf.body),{error:'CSRF_REJECTED'});
   const goodCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:'{}'});assert.equal(goodCsrf.status,200);assert.equal(JSON.parse(goodCsrf.body).message,'Automasi dijeda. Pembatalan berhasil: 0; perlu ditinjau: 0.');
@@ -42,7 +43,8 @@ test('health, dashboard auth, static UI, same-origin login, CSRF and logout are 
   const logout=await request(server,'/api/session/logout',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)}});assert.equal(logout.status,200);assert.deepEqual(JSON.parse(logout.body),{ok:true});assert.equal(logoutCalls,1);
   assert.match(logout.headers['set-cookie'][0],/bot_ndi_admin=; Path=\/; HttpOnly; SameSite=Strict; Max-Age=0/);
   assert.deepEqual(JSON.parse((await request(server,'/api/session',{headers:{cookie}})).body),{authenticated:false});
-  assert.equal((await request(server,'/api/learning/candidates',{headers:{cookie}})).status,401);
+  assert.equal((await request(server,'/api/learning/candidates',{headers:{cookie}})).status,404);
+  assert.equal((await request(server,'/api/templates',{headers:{cookie}})).status,404);
 });
 
 test('unexpected server error codes are hidden while integration availability errors remain actionable',async t=>{
@@ -76,37 +78,32 @@ test('login rate limiting returns the shared throttle Retry-After delay',async t
   assert.deepEqual(JSON.parse(response.body),{error:'LOGIN_RATE_LIMITED'});
 });
 
-test('settings and facts routes reject invalid data before persistence',async t=>{
-  let writes=0;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};const repo={saveSettings:async settings=>{writes++;return settings;},saveFact:async()=>{writes++;}};const auth={authenticate:async()=>({admin:{id:1},csrfToken:'c'.repeat(43)})};
+test('NDI settings and knowledge validate before persistence; legacy facts are archived',async t=>{
+  let settingsWrites=0,knowledgeWrites=0,factWrites=0;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};const repo={saveSettings:async settings=>{settingsWrites++;return settings;},saveKnowledge:async knowledge=>{knowledgeWrites++;return{knowledge,approved:true};},saveFact:async()=>{factWrites++;}};const auth={authenticate:async()=>({admin:{id:1},csrfToken:'c'.repeat(43)})};
   const app=createServer({config,repository:repo,auth});const server=require('node:http').createServer(app);const listening=new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});server.listen(0,'127.0.0.1');await listening;t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:'bot_ndi_admin='+encodeURIComponent('x'.repeat(43)),'x-csrf-token':'c'.repeat(43)};
   const invalid=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{hours:0,minutes:0}})});assert.equal(invalid.status,400);
-  const minute=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{hours:0,minutes:1}})});assert.equal(minute.status,200);assert.equal(JSON.parse(minute.body).schedule.intervalMinutes,1);
+  const minute=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{hours:0,minutes:1},hashtags:[' #Bot NDI ','##botndi']})});assert.equal(minute.status,200);assert.equal(JSON.parse(minute.body).schedule.intervalMinutes,1);assert.deepEqual(JSON.parse(minute.body).hashtags,['#BotNDI']);
   const hourly=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{intervalHours:1}})});assert.equal(hourly.status,200);assert.equal(JSON.parse(hourly.body).schedule.intervalMinutes,60);
   const invalidHashtag=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({hashtags:['#bad/tag']})});assert.equal(invalidHashtag.status,400);
-  const hashtags=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({hashtags:[' #Bot NDI ','##botndi']})});assert.equal(hashtags.status,200);assert.deepEqual(JSON.parse(hashtags.body).hashtags,['#BotNDI']);
-  const direction='  Utamakan soalan santai tentang pengalaman bermain bersama kawan.  ';
-  const savedDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:direction}})});assert.equal(savedDirection.status,200);assert.equal(JSON.parse(savedDirection.body).brand.contentDirection,direction.trim());
-  const invalidDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:'x'.repeat(7001)}})});assert.equal(invalidDirection.status,400);
-  const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,4);
-  const invalidAttribute=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['Mythic ✨']}})});assert.equal(invalidAttribute.status,400);assert.equal(writes,4);
-  const invalidAttributeLength=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['A'.repeat(101)]}})});assert.equal(invalidAttributeLength.status,400);assert.equal(writes,4);
-  const tooManyAttributes=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:Array(21).fill('Rank Mythic')}})});assert.equal(tooManyAttributes.status,400);assert.equal(writes,4);
-  const validAttribute=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['Rank Mythic']}})});assert.equal(validAttribute.status,200);assert.equal(writes,5);
-  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/hashtags:\s*\(settings\.hashtags\s*\|\|\s*\[\]\)/);assert.match(appSource,/settings\.hashtags\s*=\s*lines\(value\(form,\s*'hashtags'\)\)/);assert.match(appSource,/contentDirection:\s*brand\.contentDirection/);assert.match(appSource,/contentDirection:\s*value\(form,\s*'contentDirection'\)/);assert.match(appSource,/hookVocabulary:\s*\(guardrails\.hookVocabulary\s*\|\|\s*\[\]\)/);assert.match(appSource,/hookVocabulary:\s*lines\(value\(form,\s*'hookVocabulary'\)\)/);assert.match(appSource,/hookVocabulary:\s*\(data\.hookVocabulary\s*\|\|\s*\[\]\)\.join/);assert.match(appSource,/hookVocabulary:\s*lines\(val\('hookVocabulary'\)\)/);assert.match(appSource,/const currentSchedule\s*=\s*\{\s*\.\.\.\(settings\.schedule\s*\|\|\s*\{\}\)\s*\}/);assert.match(appSource,/delete currentSchedule\.intervalMinutes/);assert.match(appSource,/settings\.schedule\s*=\s*\{\s*\.\.\.currentSchedule, hours:/);assert.match(appSource,/intervalMinutes\) && schedule\.intervalMinutes > 0/);assert.match(appSource,/const required = items\.filter\(\(item\)\s*=>\s*item\.required\)/);assert.match(appSource,/const completeRequired = required\.filter\(\(item\)\s*=>\s*item\.complete\)/);assert.match(appSource,/item\.required === false/);
+  const badLegacyFields=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({gameWhitelist:['Mobile Legends'],trackedLinks:{topup:'https://shop.example.test'}})});assert.equal(badLegacyFields.status,200);assert.equal(Object.hasOwn(JSON.parse(badLegacyFields.body),'gameWhitelist'),false);assert.equal(Object.hasOwn(JSON.parse(badLegacyFields.body),'trackedLinks'),false);
+  const invalidKnowledge=await request(server,'/api/knowledge',{method:'PUT',headers,body:JSON.stringify({...DEFAULT_NDI_KNOWLEDGE,ctaUrl:'http://unsafe.example.test'})});assert.equal(invalidKnowledge.status,400);assert.equal(knowledgeWrites,0);
+  const validKnowledge=await request(server,'/api/knowledge',{method:'PUT',headers,body:JSON.stringify({...DEFAULT_NDI_KNOWLEDGE,ctaUrl:'https://portfolio.example.test/ndi'})});assert.equal(validKnowledge.status,200);assert.equal(JSON.parse(validKnowledge.body).knowledge.ctaUrl,'https://portfolio.example.test/ndi');assert.equal(knowledgeWrites,1);
+  const archived=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'Rp 30.000'}})});assert.equal(archived.status,410);assert.equal(JSON.parse(archived.body).error,'LEGACY_FACTS_ARCHIVED');assert.equal(factWrites,0);
+  assert.equal(settingsWrites,3);
+  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/const knowledge = \{[\s\S]*companyName: value\(form, 'companyName'\)/);assert.match(appSource,/const settings = \{ schedule: state\.data\.settings\?\.schedule \|\| \{\}, hashtags: lines\(value\(form, 'hashtags'\)\) \}/);assert.match(appSource,/api\('\/api\/knowledge'/);assert.match(appSource,/ctaUrl: value\(form, 'ctaUrl'\)\.trim\(\)/);assert.doesNotMatch(appSource,/api\(['"`]\/api\/(?:templates|learning)\//);
 });
 
 test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
   const now=new Date();let enabledCalls=0;let dispatchCalls=0;
-  const settings={brand:{name:'Bot NDI',voice:'Santai'}, hashtags:['#BotNDI'], trackedLinks:{topup:'https://botndi.test/topup',account:'https://botndi.test/account'}};
+  const settings={schedule:{intervalMinutes:60},hashtags:['#BotNDI'],businessKnowledge:DEFAULT_NDI_KNOWLEDGE};
   const repository={
-    getRuntimeState:async()=>({settings,automationEnabled:false}),
-    listFacts:async()=>({}),
+    getRuntimeState:async()=>({settings,businessKnowledge:DEFAULT_NDI_KNOWLEDGE,businessKnowledgeApproved:true,contentStrategyReady:true,automationEnabled:false}),
     setAutomationEnabled:async(enabled)=>{enabledCalls++;assert.equal(enabled,true);return{changed:true,firstPostAt:now.toISOString(),immediate:true};},
   };
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const services={externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;return{claimed:1,published:1};}};
-  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
   const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
@@ -114,33 +111,31 @@ test('automation enable requires scheduler and triggers an immediate durable dis
   assert.deepEqual(JSON.parse(response.body),{enabled:true,firstPostAt:now.toISOString(),immediate:true});
 });
 
-test('automation enable requires brand, hashtags, both links, Threads account, and AI',async t=>{
-  const now=new Date();let settings={brand:{name:'Bot NDI',voice:'Santai'},hashtags:['#BotNDI'],trackedLinks:{topup:'https://botndi.test/topup',account:'https://botndi.test/account'}};let connected=true;let aiConfigured=true;let writes=0;
-  const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>({}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
+test('automation enable requires the Phase B content strategy and all other NDI readiness checks',async t=>{
+  const now=new Date();let settings={schedule:{intervalMinutes:60},hashtags:['#NusaDataIndonesia'],businessKnowledge:{...DEFAULT_NDI_KNOWLEDGE,ctaUrl:'https://portfolio.example.test/ndi'}};let connected=true;let aiConfigured=true;let approved=true;let contentStrategyReady=true;let writes=0;
+  const repository={getRuntimeState:async()=>({settings,businessKnowledge:settings.businessKnowledge,businessKnowledgeApproved:approved,contentStrategyReady,automationEnabled:false}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const services={externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
-  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
   const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const activate=()=>request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
-  assert.equal((await activate()).status,200,'missing optional fields must not block activation');assert.equal(writes,1);
-  const completeSettings=settings;
-  settings={...completeSettings,hashtags:[]};assert.equal((await activate()).status,409,'hashtag is required');
-  settings={...completeSettings,trackedLinks:{...completeSettings.trackedLinks,topup:''}};assert.equal((await activate()).status,409,'top-up link is required');
-  settings={...completeSettings,trackedLinks:{...completeSettings.trackedLinks,account:''}};assert.equal((await activate()).status,409,'account link is required');
-  settings={...completeSettings,brand:{name:'',voice:'Santai'}};assert.equal((await activate()).status,409,'brand name is required');
-  settings={...completeSettings,brand:{name:'Bot NDI',voice:''}};assert.equal((await activate()).status,409,'brand communication style is required');
-  settings=completeSettings;connected=false;assert.equal((await activate()).status,409,'Threads account must be connected');
+  assert.equal((await activate()).status,200,'editable arbitrary HTTPS CTA is accepted');assert.equal(writes,1);
+  contentStrategyReady=false;const strategyBlocked=await activate();assert.equal(strategyBlocked.status,409);assert.equal(JSON.parse(strategyBlocked.body).error,'CONTENT_STRATEGY_NOT_READY');assert.equal(writes,1,'Phase B readiness must block activation before changing automation state');
+  contentStrategyReady=true;
+  approved=false;assert.equal((await activate()).status,409,'knowledge must be reviewed');
+  approved=true;settings={...settings,businessKnowledge:{...settings.businessKnowledge,ctaUrl:'http://unsafe.example.test'}};assert.equal((await activate()).status,409,'CTA must be HTTPS');
+  settings={...settings,businessKnowledge:{...DEFAULT_NDI_KNOWLEDGE,ctaUrl:'https://portfolio.example.test/ndi'}};connected=false;assert.equal((await activate()).status,409,'Threads account must be connected');
   connected=true;services.aiConfigured=false;assert.equal((await activate()).status,409,'AI provider must be configured');
   assert.equal(writes,1,'failed required gates must not enable automation');
 });
 
 test('automation enable starts immediately even if the previous session posted under one hour ago',async t=>{
   const firstPostAt=new Date().toISOString();let dispatchCalls=0;
-  const settings={schedule:{intervalHours:1},brand:{name:'Bot NDI',voice:'Santai'},gameWhitelist:['Mobile Legends'],hashtags:['#BotNDI'],guardrails:{approved:true},trackedLinks:{topup:'https://botndi.test/topup',account:'https://botndi.test/account'}};
-  const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:new Date()}])),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:true})};
+  const settings={schedule:{intervalMinutes:60},hashtags:['#BotNDI'],businessKnowledge:DEFAULT_NDI_KNOWLEDGE};
+  const repository={getRuntimeState:async()=>({settings,businessKnowledge:DEFAULT_NDI_KNOWLEDGE,businessKnowledgeApproved:true,contentStrategyReady:true,automationEnabled:false}),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:true})};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
-  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
   const app=createServer({config,repository,auth,services:{externalIntegrationsEnabled:true,aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;}}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
@@ -217,62 +212,16 @@ test('admin management requires authentication and CSRF, supports create/update,
   const selfChanged=await request(server,'/api/admins/1',{method:'PATCH',headers:{...base,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)},body:JSON.stringify({email:'one-updated@example.test'})});assert.equal(selfChanged.status,200);assert.equal(JSON.parse(selfChanged.body).sessionRevoked,true);assert.match(selfChanged.headers['set-cookie'][0],/Max-Age=0/);
 });
 
-test('template API is authenticated, CSRF-protected, structured and rejects dynamic product facts',async t=>{
-  const templates=[];const calls=[];const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
-  const repository={getSettings:async()=>({gameWhitelist:['Mobile Legends']}),listTemplates:async()=>templates,getTemplate:async id=>templates.find(item=>item.id===id)||null,createTemplate:async input=>{calls.push(['create',input]);const item={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};templates.push(item);return item;},updateTemplate:async(id,patch)=>{calls.push(['update',id,patch]);const item=templates.find(entry=>entry.id===id);Object.assign(item,patch);return item;},deleteTemplate:async(id,actorId)=>{calls.push(['delete',id,actorId]);return templates.some(item=>item.id===id);}};
-  const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
-  const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
-  const cookie=`${require('../src/server').COOKIE}=${'x'.repeat(43)}`;const headers={cookie,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
-  assert.equal((await request(server,'/api/templates')).status,401);assert.equal((await request(server,'/api/templates',{headers:{cookie}})).status,200);
-  const noCsrf=await request(server,'/api/templates',{method:'POST',headers:{cookie,origin:config.baseUrl},body:JSON.stringify({name:'ML Top-up',category:'topup',data:{game:'Mobile Legends'}})});assert.equal(noCsrf.status,403);
-  const unknownGame=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Game Lain',category:'topup',data:{game:'PUBG Mobile',denomination:'400 diamonds'}})});assert.equal(unknownGame.status,400);assert.equal(JSON.parse(unknownGame.body).error,'GAME_NOT_WHITELISTED');
-  const dynamicFact=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'ML Top-up',category:'topup',data:{game:'Mobile Legends',denomination:'400 diamonds',price:'IDR 30'}})});assert.equal(dynamicFact.status,400);
-  const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Gaya santai',category:'brand',data:{voice:'Ramah dan santai',guardrailsApproved:true}})});assert.equal(created.status,400);
-  const valid=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Top-up ML',category:'topup',data:{game:'Mobile Legends',denomination:'400 diamonds'}})});assert.equal(valid.status,201);assert.deepEqual(calls[0][1].data,{game:'Mobile Legends',denomination:'400 diamonds'});
-  const id=JSON.parse(valid.body).template.id;
-  const changed=await request(server,`/api/templates/${id}`,{method:'PATCH',headers,body:JSON.stringify({name:'Top-up ML 400'})});assert.equal(changed.status,200);assert.equal(JSON.parse(changed.body).template.name,'Top-up ML 400');
-  const deleted=await request(server,`/api/templates/${id}`,{method:'DELETE',headers});assert.equal(deleted.status,200,deleted.body);assert.equal(JSON.parse(deleted.body).deleted,true);
-});
-
-test('brand templates accept and preserve the bounded AI content direction',async t=>{
-  const templates=[];const calls=[];const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
-  const repository={getSettings:async()=>({gameWhitelist:['Mobile Legends']}),createTemplate:async input=>{calls.push(input);const item={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};templates.push(item);return item;}};
+test('legacy template and learning endpoints are not exposed by the NDI dashboard',async t=>{
+  let repositoryCalls=0;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={listTemplates:async()=>{repositoryCalls++;return[];},createTemplate:async()=>{repositoryCalls++;},getRuntimeState:async()=>{repositoryCalls++;return{};}};
   const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
   const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
-  const direction='Ajukan soalan ringkas tentang pengalaman bermain.';
-  const hookVocabulary=['Cerita pengalaman','Sembang santai'];
-  const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief santai',category:'brand',data:{contentDirection:direction,hookVocabulary}})});
-  assert.equal(created.status,201,created.body);assert.equal(calls[0].data.contentDirection,direction);assert.equal(JSON.parse(created.body).template.data.contentDirection,direction);assert.deepEqual(calls[0].data.hookVocabulary,hookVocabulary);
-  const expandedVocabulary=Array.from({length:300},(_,index)=>`kata-${index+1}`);
-  const expanded=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 300 hook',category:'brand',data:{hookVocabulary:expandedVocabulary}})});
-  assert.equal(expanded.status,201,expanded.body);assert.equal(JSON.parse(expanded.body).template.data.hookVocabulary.length,300);
-  const tooMany=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 301 hook',category:'brand',data:{hookVocabulary:[...expandedVocabulary,'kata-301']}})});
-  assert.equal(tooMany.status,400);
-  const maxLength=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief maksimum',category:'brand',data:{contentDirection:'x'.repeat(7000)}})});
-  assert.equal(maxLength.status,201,maxLength.body);
-  const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(7001)}})});
-  assert.equal(tooLong.status,400);
-});
-
-test('brand templates reject offsite CTA URLs and accept official subdomains',async t=>{
-  const calls=[];let savedTemplate=null;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},approvedCtaHosts:['botndi.test']};
-  const repository={
-    getSettings:async()=>({gameWhitelist:[]}),
-    createTemplate:async input=>{calls.push(input);savedTemplate={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};return savedTemplate;},
-    getTemplate:async id=>savedTemplate?.id===id?savedTemplate:null,
-    updateTemplate:async(_id,changes)=>{savedTemplate={...savedTemplate,...changes};return savedTemplate;},
-  };
-  const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
-  const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
-  const headers={cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
-  const rejected=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'CTA luar',category:'brand',data:{trackedTopup:'https://botndi.test.evil.test/topup'}})});
-  assert.equal(rejected.status,400);assert.equal(calls.length,0);
-  const accepted=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'CTA resmi',category:'brand',data:{trackedTopup:'https://shop.botndi.test/topup'}})});
-  assert.equal(accepted.status,201,accepted.body);assert.equal(calls.length,1);assert.equal(calls[0].data.trackedTopup,'https://shop.botndi.test/topup');
-  const id=JSON.parse(accepted.body).template.id;
-  const unsafeUpdate=await request(server,`/api/templates/${id}`,{method:'PATCH',headers,body:JSON.stringify({data:{trackedTopup:'https://unrelated.test/topup'}})});
-  assert.equal(unsafeUpdate.status,400);
+  for (const path of ['/api/templates','/api/templates/legacy','/api/learning/candidates','/api/learning/rules']) {
+    assert.equal((await request(server,path,{headers})).status,404,path);
+  }
+  assert.equal(repositoryCalls,0,'legacy content endpoints must not access persisted legacy rows');
 });
 
 test('readiness failure response remains minimal when dependencies are unavailable',async t=>{

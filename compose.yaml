@@ -39,7 +39,6 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-3000}
       BASE_URL: ${BASE_URL:?Set BASE_URL in /opt/bot-ndi/.env}
-      APPROVED_CTA_HOSTS: ${APPROVED_CTA_HOSTS:-}
       TIMEZONE: ${TIMEZONE:-Asia/Jakarta}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}

@@ -1,8 +1,13 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { formatSlotNotice } = require('./telegram-format');
-const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
+const { contentSafetyHash } = require('./content-safety');
+const { validateNdiCaption } = require('./content-validation');
 const { DateTime } = require('luxon');
-const { isInActiveWindow, validateSettings, isFactFresh, normalizeScheduleInterval } = require('./policy');
+const { isInActiveWindow, normalizeScheduleInterval } = require('./policy');
+const { validateNdiSettings } = require('./ndi-settings');
+const { validateBusinessKnowledge } = require('./business-knowledge');
+const { contentStrategyReadiness, selectUniform, validateStrategyInput } = require('./content-strategy');
+const { OFFICIAL_URL } = require('./website-knowledge-sync');
 
 const STALE_PUBLISHING_AFTER_MS = 120_000;
 
@@ -37,10 +42,23 @@ function normalizeCompletedAt(value) {
   if (!parsed.isValid) throw Object.assign(new TypeError('completedAt must be a valid ISO timestamp'), { code: 'INVALID_COMPLETED_AT' });
   return parsed.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
 }
+function normalizeProviderPublishedAt(value) {
+  if (value === null) return null;
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw Object.assign(new TypeError('providerPublishedAt must be a valid date'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+    return DateTime.fromJSDate(value, { zone: 'utc' }).toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+  }
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+    throw Object.assign(new TypeError('providerPublishedAt must be an ISO timestamp, Date, or null'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+  }
+  const parsed = DateTime.fromISO(value, { setZone: true });
+  if (!parsed.isValid) throw Object.assign(new TypeError('providerPublishedAt must be a valid ISO timestamp'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+  return parsed.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+}
 
 /**
  * @typedef {{ provider: 'tebar' | 'openrouter', profileId: string | null, accountId: string | null, reasonCode: string, slotId?: string | null }} ProviderHold
- * @typedef {{ status: 'publishing' | 'unknown' | 'published' | 'failed' | 'partial' | 'canceled', providerPostId?: string | null, providerStatus?: string | null, errorCode?: string | null, completedAt?: Date | string | null }} PublicationOutcomePatch
+ * @typedef {{ status: 'publishing' | 'unknown' | 'published' | 'failed' | 'partial' | 'canceled', providerPostId?: string | null, providerStatus?: string | null, errorCode?: string | null, completedAt?: Date | string | null, providerPublishedAt?: Date | string | null }} PublicationOutcomePatch
  * @typedef {import('mysql2/promise').Pool | import('mysql2/promise').PoolConnection} RepositoryConnection
  */
 
@@ -73,59 +91,461 @@ async function mutationQuery(connection, sql, values = []) {
   return [/** @type {import('mysql2').ResultSetHeader} */ (result), fields];
 }
 
-/** @param {import('mysql2/promise').Pool} pool @param {{allowedCtaHosts?: string[]}} [options] */
-function createRepository(pool, { allowedCtaHosts = [] } = {}) {
+/** @param {import('mysql2/promise').Pool} pool */
+function createRepository(pool) {
   if (!pool || typeof pool.execute !== 'function') throw new TypeError('mysql pool is required');
   async function audit(connection, adminId, action, details = {}) {
     await connection.execute('INSERT INTO audit_logs (admin_id, action, details_json) VALUES (?, ?, ?)', [adminId || null, action, JSON.stringify(details)]);
   }
+  async function getStrategyStatus(connection) {
+    const [[counts]] = await selectQuery(connection, `SELECT
+      (SELECT COUNT(*) FROM content_categories WHERE active=TRUE AND archived_at IS NULL) AS category_count,
+      (SELECT COUNT(*) FROM content_styles WHERE active=TRUE AND archived_at IS NULL) AS style_count`);
+    const [[strategy]] = await selectQuery(connection, 'SELECT enabled FROM content_strategy_settings WHERE id=1');
+    const [[missingTime]] = await selectQuery(connection, `SELECT id FROM slots WHERE status='published'
+      AND content_category_id IS NOT NULL AND (provider_published_at IS NULL OR YEAR(provider_published_at)<1000) LIMIT 1`);
+    let latestCategoryId = null;
+    let orderUncertain = Boolean(missingTime);
+    if (!orderUncertain) {
+      const [[latest]] = await selectQuery(connection, `SELECT provider_published_at,
+        COUNT(DISTINCT content_category_id) AS category_count
+        FROM slots WHERE status='published' AND content_category_id IS NOT NULL
+        GROUP BY provider_published_at ORDER BY provider_published_at DESC LIMIT 1`);
+      if (latest && Number(latest.category_count) > 1) orderUncertain = true;
+      else if (latest) {
+        const [[last]] = await selectQuery(connection, `SELECT content_category_id FROM slots
+          WHERE status='published' AND content_category_id IS NOT NULL AND provider_published_at=?
+          ORDER BY id DESC LIMIT 1`, [latest.provider_published_at]);
+        latestCategoryId = last?.content_category_id == null ? null : String(last.content_category_id);
+      }
+    }
+    const readiness = contentStrategyReadiness({
+      approved: strategy?.enabled === 1 || strategy?.enabled === true,
+      categoryCount: Number(counts?.category_count || 0),
+      styleCount: Number(counts?.style_count || 0),
+      orderUncertain,
+    });
+    return { ...readiness, approved: strategy?.enabled === 1 || strategy?.enabled === true,
+      categoryCount: Number(counts?.category_count || 0), styleCount: Number(counts?.style_count || 0),
+      orderUncertain, latestCategoryId };
+  }
+  function runtimeSettings(row) {
+    const stored = json(row?.settings_json);
+    const knowledge = json(row?.business_knowledge_json, null);
+    const checked = validateNdiSettings({ schedule: stored.schedule || {}, hashtags: stored.hashtags || [], businessKnowledge: knowledge || {} });
+    return {
+      ...(checked.valid ? checked.settings : { schedule: normalizeScheduleInterval(stored.schedule || {}), hashtags: [], businessKnowledge: {} }),
+      targetAccountId: stored.targetAccountId || null,
+      profileId: stored.profileId || null,
+      onboardingComplete: stored.onboardingComplete === true,
+      automationSessionId: stored.automationSessionId || null,
+      nextSlotAt: stored.nextSlotAt || null,
+      integrationConfigInitialized: stored.integrationConfigInitialized === true,
+    };
+  }
   async function getSettings() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
-    const row = rows[0]; if (!row) return { automationEnabled: false };
-    const settings = json(row.settings_json);
-    const knowledge = json(row.knowledge_json);
-    return { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {}, automationEnabled: Boolean(row.automation_enabled) };
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,business_knowledge_version,automation_enabled FROM settings WHERE id=1');
+    const row = rows[0];
+    if (!row) return { automationEnabled: false, businessKnowledgeApproved: false, businessKnowledgeVersion: 1 };
+    return { ...runtimeSettings(row), businessKnowledgeApproved: Boolean(row.business_knowledge_approved), businessKnowledgeVersion: Number(row.business_knowledge_version || 1), automationEnabled: Boolean(row.automation_enabled) };
   }
   async function getRuntimeState() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,business_knowledge_version,automation_enabled FROM settings WHERE id=1');
     const row = rows[0];
-    const settings = json(row.settings_json);
-    const knowledge = json(row.knowledge_json);
-    const facts = await listFacts();
+    const settings = runtimeSettings(row);
     const history = await listSlots(1000);
-    const factRows = Object.entries(facts).map(([service, fact]) => ({ ...fact.summary, id: service, pillar: service === 'account' ? 'account' : 'topup', active: fact.active, updatedAt: fact.updatedAt }));
-    return { settings: { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {} }, knowledge, facts: factRows, history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+    const strategy = await getStrategyStatus(pool);
+    return { settings, businessKnowledge: settings.businessKnowledge, businessKnowledgeApproved: Boolean(row?.business_knowledge_approved),
+      businessKnowledgeVersion: Number(row?.business_knowledge_version || 1),
+      contentStrategyReady: strategy.ready, contentStrategyReason: strategy.message, contentStrategyReasonCode: strategy.reasonCode,
+      contentStrategy: strategy, facts: [], history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+  }
+  async function getContentStrategyState() {
+    const [categories] = await selectQuery(pool, `SELECT id,slug,name,guidance,active,archived_at,created_at,updated_at
+      FROM content_categories ORDER BY id`);
+    const [styles] = await selectQuery(pool, `SELECT id,slug,name,instructions,active,archived_at,created_at,updated_at
+      FROM content_styles ORDER BY id`);
+    const [proposals] = await selectQuery(pool, `SELECT id,name,guidance,status,source,reviewed_by,reviewed_at,created_at
+      FROM category_proposals ORDER BY id DESC LIMIT 100`);
+    const [[proposalSettings]] = await selectQuery(pool, `SELECT enabled,interval_days,next_run_at,last_started_at,last_completed_at,last_error_code
+      FROM category_proposal_settings WHERE id=1`);
+    const strategy = await getStrategyStatus(pool);
+    return {
+      categories: categories.map((item) => ({ ...item, id: String(item.id), active: Boolean(item.active), archivedAt: item.archived_at, createdAt: item.created_at, updatedAt: item.updated_at })),
+      styles: styles.map((item) => ({ ...item, id: String(item.id), active: Boolean(item.active), archivedAt: item.archived_at, createdAt: item.created_at, updatedAt: item.updated_at })),
+      proposals: proposals.map((item) => ({ ...item, id: String(item.id), reviewedBy: item.reviewed_by == null ? null : String(item.reviewed_by), reviewedAt: item.reviewed_at, createdAt: item.created_at })),
+      proposalSettings: proposalSettings ? { enabled: Boolean(proposalSettings.enabled), intervalDays: Number(proposalSettings.interval_days), nextRunAt: proposalSettings.next_run_at, lastStartedAt: proposalSettings.last_started_at, lastCompletedAt: proposalSettings.last_completed_at, lastErrorCode: proposalSettings.last_error_code } : { enabled: false, intervalDays: 30 },
+      readiness: strategy,
+    };
+  }
+  async function getWebsiteSyncState() {
+    const [runs] = await selectQuery(pool, `SELECT id,requested_by,source_url,knowledge_version,status,proposal_count,error_code,fetched_at,completed_at,created_at
+      FROM website_sync_runs ORDER BY created_at DESC,id DESC LIMIT 50`);
+    const [proposals] = await selectQuery(pool, `SELECT id,sync_run_id,knowledge_version,field_name,operation,target_value,base_value,source_url,source_title,fetched_at,status,conflict_code,reviewed_by,reviewed_at,created_at
+      FROM website_sync_proposals ORDER BY id DESC LIMIT 200`);
+    return {
+      knowledgeVersion: (await getSettings()).businessKnowledgeVersion,
+      runs: runs.map((item) => ({ id: item.id, requestedBy: item.requested_by == null ? null : String(item.requested_by), sourceUrl: item.source_url,
+        knowledgeVersion: Number(item.knowledge_version), status: item.status, proposalCount: Number(item.proposal_count), errorCode: item.error_code,
+        fetchedAt: item.fetched_at, completedAt: item.completed_at, createdAt: item.created_at })),
+      proposals: proposals.map((item) => ({ id: String(item.id), syncRunId: item.sync_run_id, knowledgeVersion: Number(item.knowledge_version),
+        field: item.field_name, operation: item.operation, targetValue: item.target_value, baseValue: item.base_value, sourceUrl: item.source_url,
+        sourceTitle: item.source_title, fetchedAt: item.fetched_at, status: item.status, conflictCode: item.conflict_code,
+        reviewedBy: item.reviewed_by == null ? null : String(item.reviewed_by), reviewedAt: item.reviewed_at, createdAt: item.created_at })),
+    };
+  }
+  async function startWebsiteSyncRun(adminId) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[settings]] = await selectQuery(connection, `SELECT business_knowledge_json,business_knowledge_approved,business_knowledge_version
+        FROM settings WHERE id=1 FOR UPDATE`, [], 'query');
+      const knowledge = json(settings?.business_knowledge_json, {});
+      const checked = validateBusinessKnowledge(knowledge);
+      if (!settings?.business_knowledge_approved || !checked.valid) {
+        throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
+      }
+      const id = randomUUID();
+      const knowledgeVersion = Number(settings.business_knowledge_version || 1);
+      await connection.execute(`INSERT INTO website_sync_runs (id,requested_by,source_url,knowledge_version,status)
+        VALUES (?,?,?,?,'running')`, [id, adminId || null, OFFICIAL_URL, knowledgeVersion]);
+      await audit(connection, adminId, 'ndi_website_sync.requested', { runId: id, sourceUrl: OFFICIAL_URL, knowledgeVersion });
+      await connection.commit();
+      return { id, knowledgeVersion, knowledge: checked.knowledge };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function completeWebsiteSyncRun({ id, knowledgeVersion, sourceUrl, sourceTitle, fetchedAt, completedAt, proposals }) {
+    if (typeof id !== 'string' || !Number.isInteger(knowledgeVersion) || sourceUrl !== OFFICIAL_URL
+      || typeof sourceTitle !== 'string' || !sourceTitle.trim() || sourceTitle.length > 200
+      || !(fetchedAt instanceof Date) || !Number.isFinite(fetchedAt.getTime())
+      || !Array.isArray(proposals) || proposals.length > 100
+      || !(completedAt instanceof Date) || !Number.isFinite(completedAt.getTime())) {
+      throw Object.assign(new Error('INVALID_WEBSITE_SYNC_RESULT'), { code: 'INVALID_WEBSITE_SYNC_RESULT', status: 400 });
+    }
+    const prepared = proposals.map((item) => {
+      const cleanValue = (value) => typeof value === 'string' && value === value.trim() && value.length > 0 && value.length <= 300
+        && !/[\u0000-\u001f\u007f]/u.test(value);
+      if (!['add', 'edit', 'remove'].includes(item?.operation) || !cleanValue(item.targetValue)
+        || (item.operation === 'add' && item.baseValue !== null)
+        || (item.operation !== 'add' && !cleanValue(item.baseValue))
+        || item.sourceUrl !== OFFICIAL_URL || item.sourceTitle !== sourceTitle
+        || !(item.fetchedAt instanceof Date) || item.fetchedAt.getTime() !== fetchedAt.getTime()
+        || item.knowledgeVersion !== knowledgeVersion) {
+        throw Object.assign(new Error('INVALID_WEBSITE_SYNC_PROPOSAL'), { code: 'INVALID_WEBSITE_SYNC_PROPOSAL', status: 400 });
+      }
+      return item;
+    });
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[run]] = await selectQuery(connection, 'SELECT status,knowledge_version,source_url,requested_by FROM website_sync_runs WHERE id=? FOR UPDATE', [id]);
+      if (!run || run.status !== 'running' || Number(run.knowledge_version) !== knowledgeVersion || run.source_url !== OFFICIAL_URL) {
+        throw Object.assign(new Error('WEBSITE_SYNC_RUN_NOT_FOUND'), { code: 'WEBSITE_SYNC_RUN_NOT_FOUND', status: 409 });
+      }
+      for (const proposal of prepared) {
+        await connection.execute(`INSERT INTO website_sync_proposals (sync_run_id,knowledge_version,field_name,operation,target_value,base_value,source_url,source_title,fetched_at)
+          VALUES (?,?, 'services', ?,?,?,?,?,?)`, [id, knowledgeVersion, proposal.operation, proposal.targetValue, proposal.baseValue, OFFICIAL_URL, sourceTitle, fetchedAt]);
+      }
+      await connection.execute(`UPDATE website_sync_runs SET status='completed',proposal_count=?,fetched_at=?,completed_at=? WHERE id=?`, [prepared.length, fetchedAt, completedAt, id]);
+      await audit(connection, run.requested_by, 'ndi_website_sync.completed', { runId: id, proposalCount: prepared.length, sourceUrl: OFFICIAL_URL, knowledgeVersion });
+      await connection.commit();
+      return { syncRunId: id, proposalCount: prepared.length, fetchedAt };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function failWebsiteSyncRun({ id, errorCode, failedAt }) {
+    if (typeof id !== 'string' || !/^WEBSITE_SYNC_[A-Z0-9_]{2,60}$/.test(errorCode)
+      || !(failedAt instanceof Date) || !Number.isFinite(failedAt.getTime())) return false;
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[run]] = await selectQuery(connection, 'SELECT requested_by FROM website_sync_runs WHERE id=? AND status=\'running\' FOR UPDATE', [id]);
+      if (!run) { await connection.commit(); return false; }
+      const [updated] = await mutationQuery(connection, `UPDATE website_sync_runs SET status='failed',error_code=?,completed_at=?
+        WHERE id=? AND status='running'`, [errorCode, failedAt, id]);
+      if (updated.affectedRows) await audit(connection, run.requested_by, 'ndi_website_sync.failed', { runId: id, errorCode });
+      await connection.commit();
+      return Boolean(updated.affectedRows);
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function reviewWebsiteKnowledgeProposal(id, decision, adminId) {
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || !['approve', 'reject'].includes(decision)) {
+      throw Object.assign(new Error('INVALID_WEBSITE_SYNC_REVIEW'), { code: 'INVALID_WEBSITE_SYNC_REVIEW', status: 400 });
+    }
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[settings]] = await selectQuery(connection, 'SELECT business_knowledge_json,business_knowledge_approved,business_knowledge_version FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[proposal]] = await selectQuery(connection, 'SELECT * FROM website_sync_proposals WHERE id=? FOR UPDATE', [id]);
+      if (!proposal) throw Object.assign(new Error('WEBSITE_SYNC_PROPOSAL_NOT_FOUND'), { code: 'WEBSITE_SYNC_PROPOSAL_NOT_FOUND', status: 404 });
+      if (proposal.status !== 'pending') throw Object.assign(new Error('WEBSITE_SYNC_PROPOSAL_ALREADY_REVIEWED'), { code: 'WEBSITE_SYNC_PROPOSAL_ALREADY_REVIEWED', status: 409 });
+      const currentVersion = Number(settings?.business_knowledge_version || 1);
+      if (decision === 'reject') {
+        await connection.execute(`UPDATE website_sync_proposals SET status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.rejected', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, field: proposal.field_name, operation: proposal.operation, knowledgeVersion: Number(proposal.knowledge_version) });
+        await connection.commit();
+        return { status: 'rejected', knowledgeVersion: currentVersion };
+      }
+      const conflict = (code) => ({ status: 'conflict', code });
+      if (!settings?.business_knowledge_approved || currentVersion !== Number(proposal.knowledge_version)
+        || proposal.field_name !== 'services' || proposal.source_url !== OFFICIAL_URL) {
+        const code = currentVersion !== Number(proposal.knowledge_version) ? 'KNOWLEDGE_VERSION_CHANGED' : 'KNOWLEDGE_NOT_APPROVED';
+        await connection.execute(`UPDATE website_sync_proposals SET status='conflict',conflict_code=?,reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [code, adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.conflict', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, conflictCode: code, proposalVersion: Number(proposal.knowledge_version), currentVersion });
+        await connection.commit();
+        return conflict(code);
+      }
+      const knowledge = json(settings.business_knowledge_json, {});
+      const services = Array.isArray(knowledge.services) ? [...knowledge.services] : [];
+      const normalized = (value) => String(value).normalize('NFKC').trim().toLocaleLowerCase('id');
+      const baseIndex = proposal.base_value == null ? -1 : services.findIndex((value) => normalized(value) === normalized(proposal.base_value));
+      const targetExists = services.some((value) => normalized(value) === normalized(proposal.target_value));
+      let nextServices;
+      let conflictCode = null;
+      if (proposal.operation === 'add') {
+        if (targetExists) conflictCode = 'SERVICE_ALREADY_EXISTS';
+        else nextServices = [...services, proposal.target_value];
+      } else if (proposal.operation === 'remove') {
+        if (baseIndex < 0 || normalized(proposal.target_value) !== normalized(proposal.base_value)) conflictCode = 'SERVICE_CHANGED';
+        else nextServices = services.filter((_value, index) => index !== baseIndex);
+      } else if (proposal.operation === 'edit') {
+        if (baseIndex < 0 || targetExists || normalized(proposal.target_value) === normalized(proposal.base_value)) conflictCode = 'SERVICE_CHANGED';
+        else nextServices = services.map((value, index) => index === baseIndex ? proposal.target_value : value);
+      } else conflictCode = 'INVALID_WEBSITE_SYNC_OPERATION';
+      const checked = conflictCode ? null : validateBusinessKnowledge({ ...knowledge, services: nextServices });
+      if (!conflictCode && !checked?.valid) conflictCode = 'KNOWLEDGE_VALIDATION_FAILED';
+      if (conflictCode) {
+        await connection.execute(`UPDATE website_sync_proposals SET status='conflict',conflict_code=?,reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [conflictCode, adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.conflict', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, conflictCode, proposalVersion: Number(proposal.knowledge_version), currentVersion });
+        await connection.commit();
+        return conflict(conflictCode);
+      }
+      const nextVersion = currentVersion + 1;
+      await connection.execute(`UPDATE settings SET business_knowledge_json=?,business_knowledge_version=? WHERE id=1`, [JSON.stringify(checked.knowledge), nextVersion]);
+      await connection.execute(`UPDATE website_sync_proposals SET status='approved',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+        WHERE id=? AND status='pending'`, [adminId || null, proposal.id]);
+      await connection.execute(`UPDATE website_sync_proposals SET knowledge_version=? WHERE sync_run_id=? AND status='pending' AND id<>? AND knowledge_version=?`, [nextVersion, proposal.sync_run_id, proposal.id, currentVersion]);
+      await audit(connection, adminId, 'ndi_website_sync.proposal.approved', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, field: proposal.field_name, operation: proposal.operation, knowledgeVersion: nextVersion });
+      await connection.commit();
+      return { status: 'approved', knowledgeVersion: nextVersion, knowledge: checked.knowledge };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  function strategyTable(kind) {
+    if (kind === 'category') return { table: 'content_categories', detail: 'guidance', event: 'content_category' };
+    if (kind === 'style') return { table: 'content_styles', detail: 'instructions', event: 'content_style' };
+    throw Object.assign(new Error('INVALID_CONTENT_STRATEGY_KIND'), { code: 'INVALID_CONTENT_STRATEGY_KIND', status: 400 });
+  }
+  function strategySlug(name) {
+    return name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'content-strategy';
+  }
+  async function saveContentStrategyRecord(kind, id, input, adminId) {
+    const config = strategyTable(kind);
+    const checked = validateStrategyInput(input, { kind });
+    if (!checked.valid) throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400, fields: checked.errors });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      let recordId = id;
+      let slug = strategySlug(checked.record.name);
+      if (id !== null && id !== undefined) {
+        if (!/^[1-9]\d{0,19}$/.test(String(id))) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+        const [[existing]] = await selectQuery(c, `SELECT id,slug,archived_at FROM ${config.table} WHERE id=? FOR UPDATE`, [id]);
+        if (!existing || existing.archived_at) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+        recordId = existing.id;
+        slug = existing.slug;
+        await c.execute(`UPDATE ${config.table} SET name=?,${config.detail}=?,active=? WHERE id=?`, [checked.record.name, checked.record[config.detail], checked.record.active, recordId]);
+      } else {
+        const [insert] = await mutationQuery(c, `INSERT INTO ${config.table} (slug,name,${config.detail},active) VALUES (?,?,?,?)`, [slug, checked.record.name, checked.record[config.detail], checked.record.active]);
+        recordId = insert.insertId;
+      }
+      await audit(c, adminId, `${config.event}.${id == null ? 'created' : 'updated'}`, { id: String(recordId), slug, active: checked.record.active });
+      await c.commit();
+      return { id: String(recordId), slug, ...checked.record };
+    } catch (error) {
+      await c.rollback();
+      if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('CONTENT_STRATEGY_DUPLICATE'), { code: 'CONTENT_STRATEGY_DUPLICATE', status: 409 });
+      throw error;
+    } finally { c.release(); }
+  }
+  async function setContentStrategyRecordActive(kind, id, active, adminId) {
+    const config = strategyTable(kind);
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || typeof active !== 'boolean') throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [updated] = await mutationQuery(c, `UPDATE ${config.table} SET active=? WHERE id=? AND archived_at IS NULL`, [active, id]);
+      if (!updated.affectedRows) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+      await audit(c, adminId, `${config.event}.${active ? 'activated' : 'deactivated'}`, { id: String(id) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function archiveContentStrategyRecord(kind, id, adminId) {
+    const config = strategyTable(kind);
+    if (!/^[1-9]\d{0,19}$/.test(String(id))) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [updated] = await mutationQuery(c, `UPDATE ${config.table} SET active=FALSE,archived_at=COALESCE(archived_at,UTC_TIMESTAMP(3)) WHERE id=? AND archived_at IS NULL`, [id]);
+      if (!updated.affectedRows) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+      await audit(c, adminId, `${config.event}.archived`, { id: String(id) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function setContentStrategyEnabled(enabled, adminId) {
+    if (typeof enabled !== 'boolean') throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (settings?.automation_enabled) throw Object.assign(new Error('AUTOMATION_MUST_BE_PAUSED'), { code: 'AUTOMATION_MUST_BE_PAUSED', status: 409 });
+      if (enabled) {
+        const readiness = await getStrategyStatus(c);
+        if (readiness.categoryCount < 1 || readiness.styleCount < 1 || readiness.orderUncertain) {
+          throw Object.assign(new Error(readiness.reasonCode || 'CONTENT_STRATEGY_NOT_READY'), { code: readiness.reasonCode || 'CONTENT_STRATEGY_NOT_READY', status: 409 });
+        }
+      }
+      await c.execute('UPDATE content_strategy_settings SET enabled=?,enabled_by=?,enabled_at=IF(?,UTC_TIMESTAMP(3),enabled_at) WHERE id=1', [enabled, enabled ? adminId : null, enabled]);
+      await audit(c, adminId, enabled ? 'content_strategy.enabled' : 'content_strategy.disabled', {});
+      await c.commit();
+      return { enabled };
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function saveCategoryProposalSettings({ enabled, intervalDays }, adminId) {
+    if (typeof enabled !== 'boolean' || !Number.isInteger(intervalDays) || intervalDays < 30 || intervalDays > 365) {
+      throw Object.assign(new Error('INVALID_PROPOSAL_SETTINGS'), { code: 'INVALID_PROPOSAL_SETTINGS', status: 400 });
+    }
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[existing]] = await selectQuery(c, 'SELECT enabled FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (enabled) {
+        const nextRunAt = existing?.enabled ? undefined : new Date(Date.now() + intervalDays * 86_400_000);
+        if (nextRunAt) await c.execute('UPDATE category_proposal_settings SET enabled=TRUE,interval_days=?,next_run_at=?,lease_token=NULL,lease_until=NULL,last_error_code=NULL WHERE id=1', [intervalDays, nextRunAt]);
+        else await c.execute('UPDATE category_proposal_settings SET enabled=TRUE,interval_days=?,next_run_at=COALESCE(next_run_at,?) WHERE id=1', [intervalDays, new Date(Date.now() + intervalDays * 86_400_000)]);
+      } else {
+        await c.execute('UPDATE category_proposal_settings SET enabled=FALSE,interval_days=?,next_run_at=NULL,lease_token=NULL,lease_until=NULL WHERE id=1', [intervalDays]);
+      }
+      await audit(c, adminId, 'category_proposal_settings.updated', { enabled, intervalDays });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function claimCategoryProposalRun({ now = new Date(), leaseMs = 120_000 } = {}) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[config]] = await selectQuery(c, 'SELECT enabled,interval_days,next_run_at,lease_token,lease_until FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      const current = now instanceof Date ? now : new Date(now);
+      if (!config?.enabled || !config.next_run_at || new Date(config.next_run_at) > current
+        || config.lease_until && new Date(config.lease_until) > current) {
+        await c.commit(); return null;
+      }
+      const [[state]] = await selectQuery(c, 'SELECT business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1');
+      if (!state?.business_knowledge_approved) { await c.commit(); return null; }
+      const [[integration]] = await selectQuery(c, 'SELECT status,model FROM integration_config WHERE id=1');
+      if (integration?.status !== 'ACTIVE' || !integration.model) { await c.commit(); return null; }
+      const [categories] = await selectQuery(c, 'SELECT LEFT(name,120) AS name,LEFT(guidance,200) AS guidance FROM content_categories WHERE active=TRUE AND archived_at IS NULL ORDER BY id LIMIT 30');
+      const token = randomUUID();
+      const nextRunAt = new Date(current.getTime() + Number(config.interval_days) * 86_400_000);
+      await c.execute(`UPDATE category_proposal_settings SET lease_token=?,lease_until=?,last_started_at=?,next_run_at=?,last_error_code=NULL WHERE id=1`, [token, new Date(current.getTime() + leaseMs), current, nextRunAt]);
+      await c.commit();
+      return { token, categories, knowledge: json(state.business_knowledge_json, {}), intervalDays: Number(config.interval_days), model: integration.model };
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function finishCategoryProposalRun({ token, proposals = [], errorCode = null, now = new Date() }) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[config]] = await selectQuery(c, 'SELECT lease_token FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (!config || config.lease_token !== token) { await c.commit(); return false; }
+      if (!errorCode) {
+        const [existing] = await selectQuery(c, `SELECT name FROM content_categories UNION ALL SELECT name FROM category_proposals WHERE status='pending'`);
+        const names = new Set(existing.map((item) => String(item.name).trim().toLocaleLowerCase('id')));
+        for (const proposal of proposals.slice(0, 3)) {
+          const checked = validateStrategyInput(proposal, { kind: 'category' });
+          if (!checked.valid || names.has(checked.record.name.toLocaleLowerCase('id'))) continue;
+          names.add(checked.record.name.toLocaleLowerCase('id'));
+          await c.execute("INSERT INTO category_proposals (name,guidance,status,source) VALUES (?,?,'pending','openrouter')", [checked.record.name, checked.record.guidance]);
+        }
+      }
+      await c.execute('UPDATE category_proposal_settings SET lease_token=NULL,lease_until=NULL,last_completed_at=?,last_error_code=? WHERE id=1 AND lease_token=?', [now, errorCode, token]);
+      await audit(c, null, errorCode ? 'category_proposal.job_failed' : 'category_proposal.job_completed', { errorCode, count: errorCode ? 0 : Math.min(3, proposals.length) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function reviewCategoryProposal(id, decision, adminId) {
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || !['approve', 'reject'].includes(decision)) throw Object.assign(new Error('INVALID_CATEGORY_PROPOSAL'), { code: 'INVALID_CATEGORY_PROPOSAL', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[proposal]] = await selectQuery(c, 'SELECT id,name,guidance,status FROM category_proposals WHERE id=? FOR UPDATE', [id]);
+      if (!proposal) throw Object.assign(new Error('CATEGORY_PROPOSAL_NOT_FOUND'), { code: 'CATEGORY_PROPOSAL_NOT_FOUND', status: 404 });
+      if (proposal.status !== 'pending') throw Object.assign(new Error('CATEGORY_PROPOSAL_ALREADY_REVIEWED'), { code: 'CATEGORY_PROPOSAL_ALREADY_REVIEWED', status: 409 });
+      if (decision === 'approve') {
+        const slug = strategySlug(proposal.name);
+        const [[duplicate]] = await selectQuery(c, 'SELECT id FROM content_categories WHERE slug=? OR LOWER(name)=LOWER(?) LIMIT 1', [slug, proposal.name]);
+        if (duplicate) throw Object.assign(new Error('CONTENT_STRATEGY_DUPLICATE'), { code: 'CONTENT_STRATEGY_DUPLICATE', status: 409 });
+        const [insert] = await mutationQuery(c, 'INSERT INTO content_categories (slug,name,guidance,active) VALUES (?,?,?,TRUE)', [slug, proposal.name, proposal.guidance]);
+        await c.execute("UPDATE category_proposals SET status='approved',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='pending'", [adminId, id]);
+        await audit(c, adminId, 'category_proposal.approved', { proposalId: String(id), categoryId: String(insert.insertId) });
+      } else {
+        await c.execute("UPDATE category_proposals SET status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='pending'", [adminId, id]);
+        await audit(c, adminId, 'category_proposal.rejected', { proposalId: String(id) });
+      }
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
   }
   async function saveSettings(settings, adminId) {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      const safeSettings = { ...settings }; delete safeSettings.automationEnabled;
-      if (safeSettings.schedule && typeof safeSettings.schedule === 'object' && !Array.isArray(safeSettings.schedule)) safeSettings.schedule = normalizeScheduleInterval(safeSettings.schedule);
+      const checkedSettings = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [] });
+      if (!checkedSettings.valid) throw Object.assign(new Error('INVALID_SETTINGS'), { code: 'INVALID_SETTINGS' });
+      const safeSettings = { schedule: checkedSettings.settings.schedule, hashtags: checkedSettings.settings.hashtags };
       const [[existingRow]] = await selectQuery(connection, 'SELECT settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const existing = json(existingRow?.settings_json);
-      for (const key of ['targetAccountId','profileId','integrationConfigInitialized','onboardingComplete','nextSlotAt','automationSessionId']) if (safeSettings[key] === undefined && existing[key] !== undefined) safeSettings[key] = existing[key];
+      for (const key of ['brand','guardrails','gameWhitelist','priceMode','trackedLinks']) delete existing[key];
       const scheduleKey = (schedule) => {
-        const checked = validateSettings({ schedule: schedule || {} }, { allowedCtaHosts });
+        const checked = validateNdiSettings({ schedule: schedule || {}, hashtags: [] });
         return JSON.stringify(checked.valid ? checked.settings.schedule : normalizeScheduleInterval(schedule || {}));
       };
-      if (scheduleKey(existing.schedule) !== scheduleKey(safeSettings.schedule)) delete safeSettings.nextSlotAt;
-      const knowledge = { brand: safeSettings.brand || {}, guardrails: safeSettings.guardrails || {} };
-      await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(safeSettings), JSON.stringify(knowledge)]);
+      if (scheduleKey(existing.schedule) !== scheduleKey(safeSettings.schedule)) delete existing.nextSlotAt;
+      const nextSettings = { ...existing, ...safeSettings };
+      await connection.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(nextSettings)]);
       await audit(connection, adminId, 'settings.updated', {});
-      await connection.commit(); return { ...safeSettings, automationEnabled: (await getSettings()).automationEnabled };
+      await connection.commit(); return await getSettings();
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async function saveKnowledge(knowledge, adminId) {
+    const checked = validateBusinessKnowledge(knowledge);
+    if (!checked.valid) throw Object.assign(new Error('INVALID_KNOWLEDGE'), { code: 'INVALID_KNOWLEDGE', fields: checked.errors });
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      const [[row]] = await selectQuery(connection, 'SELECT settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
-      const settings = json(row.settings_json);
-      settings.brand = knowledge.brand || settings.brand || {};
-      settings.guardrails = knowledge.guardrails || settings.guardrails || {};
-      await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
-      await audit(connection, adminId, 'knowledge.updated', {}); await connection.commit(); return knowledge;
+      await selectQuery(connection, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[versionRow]] = await selectQuery(connection, 'SELECT business_knowledge_version FROM settings WHERE id=1', [], 'query');
+      const nextVersion = Number(versionRow?.business_knowledge_version || 1) + 1;
+      await connection.execute('UPDATE settings SET business_knowledge_json=?,business_knowledge_approved=TRUE,business_knowledge_version=? WHERE id=1', [JSON.stringify(checked.knowledge), nextVersion]);
+      await audit(connection, adminId, 'ndi_knowledge.approved', { serviceCount: checked.knowledge.services.length, knowledgeVersion: nextVersion });
+      await connection.commit(); return { knowledge: checked.knowledge, approved: true, knowledgeVersion: nextVersion };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async function listFacts() {
@@ -240,55 +660,6 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const [rows] = await selectQuery(pool, 'SELECT id,email,active,created_at FROM admins ORDER BY created_at,id');
     return rows.map((row) => ({ id: Number(row.id), email: row.email, active: Boolean(row.active), createdAt: row.created_at }));
   }
-  function mapTemplate(row) {
-    return { id: row.id, name: row.name, category: row.category, data: json(row.data_json), createdBy: row.created_by == null ? null : Number(row.created_by), updatedBy: row.updated_by == null ? null : Number(row.updated_by), createdAt: row.created_at, updatedAt: row.updated_at };
-  }
-  async function listTemplates() {
-    const [rows] = await selectQuery(pool, 'SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates ORDER BY category,name');
-    return rows.map(mapTemplate);
-  }
-  async function getTemplate(id) {
-    const [rows] = await selectQuery(pool, 'SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates WHERE id=?', [id]);
-    return rows[0] ? mapTemplate(rows[0]) : null;
-  }
-  async function createTemplate({ name, category, data, actorId }) {
-    const id = randomUUID(); const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.execute('INSERT INTO templates (id,name,category,data_json,created_by,updated_by) VALUES (?,?,?,?,?,?)', [id,name,category,JSON.stringify(data),actorId,actorId]);
-      await audit(conn, actorId, 'template.created', { templateId:id, name, category });
-      await conn.commit();
-      return await getTemplate(id);
-    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
-    finally { conn.release(); }
-  }
-  async function updateTemplate(id, { name, data, actorId }) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [[existing]] = await selectQuery(conn, 'SELECT name,category,data_json FROM templates WHERE id=? FOR UPDATE', [id]);
-      if (!existing) { await conn.rollback(); return null; }
-      const nextName = name === undefined ? existing.name : name;
-      const nextData = data === undefined ? json(existing.data_json) : data;
-      await conn.execute('UPDATE templates SET name=?,data_json=?,updated_by=? WHERE id=?', [nextName,JSON.stringify(nextData),actorId,id]);
-      await audit(conn, actorId, 'template.updated', { templateId:id, name:nextName, category:existing.category });
-      await conn.commit();
-      return await getTemplate(id);
-    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
-    finally { conn.release(); }
-  }
-  async function deleteTemplate(id, actorId) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [[existing]] = await selectQuery(conn, 'SELECT name,category FROM templates WHERE id=? FOR UPDATE', [id]);
-      if (!existing) { await conn.rollback(); return false; }
-      await conn.execute('DELETE FROM templates WHERE id=?', [id]);
-      await audit(conn, actorId, 'template.deleted', { templateId:id, name:existing.name, category:existing.category });
-      await conn.commit(); return true;
-    } catch (error) { await conn.rollback(); throw error; }
-    finally { conn.release(); }
-  }
   async function createAdmin({ email, passwordHash, actorId }) {
     const conn = await pool.getConnection();
     try { await conn.beginTransaction(); await selectQuery(conn, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query'); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await selectQuery(conn, 'SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
@@ -332,7 +703,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
   }
   async function deleteSession(tokenHash) { await pool.execute('DELETE FROM sessions WHERE token_hash=?', [tokenHash]); }
   async function deleteAdminSessions(adminId) { await pool.execute('DELETE FROM sessions WHERE admin_id=?', [adminId]); }
-  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),createdAt:r.created_at,completedAt:r.completed_at})); }
+  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,content_strategy_json,provider_published_at,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),contentStrategy:json(r.content_strategy_json,null),providerPublishedAt:r.provider_published_at,createdAt:r.created_at,completedAt:r.completed_at})); }
   async function listActivity(limit=100) { const [rows]=await selectQuery(pool, 'SELECT event,details_json,created_at FROM activity_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.event,...json(r.details_json),createdAt:r.created_at})); }
   async function healthCheck() { await selectQuery(pool, 'SELECT 1'); return true; }
   async function listAudit(limit=100) { const [rows]=await selectQuery(pool, 'SELECT action,details_json,created_at FROM audit_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.action,...json(r.details_json),createdAt:r.created_at})); }
@@ -342,9 +713,15 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[current]] = await selectQuery(c, 'SELECT settings_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[current]] = await selectQuery(c, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(current?.settings_json);
       if (enabled) {
+        const strategy = await getStrategyStatus(c);
+        if (!strategy.ready) throw Object.assign(new Error(strategy.reasonCode || 'CONTENT_STRATEGY_NOT_READY'), { code: strategy.reasonCode || 'CONTENT_STRATEGY_NOT_READY', status: 409 });
+        const businessSettings = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: json(current?.business_knowledge_json, {}) });
+        if (current?.business_knowledge_approved !== 1 && current?.business_knowledge_approved !== true || !businessSettings.valid) {
+          throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
+        }
         const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
         if (integration?.status !== 'ACTIVE' || !integration.profile_id || !integration.account_id || !integration.model
           || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
@@ -366,7 +743,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       let firstPostAt = settings.nextSlotAt || null;
       let immediate = false;
       if (enabled && changed) {
-        const checked = validateSettings({ ...settings, schedule: settings.schedule || {} }, { allowedCtaHosts });
+        const checked = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: json(current?.business_knowledge_json, {}) });
         if (!checked.valid) throw Object.assign(new Error('INVALID_SETTINGS'), { code: 'INVALID_SETTINGS' });
         const now = new Date();
         firstPostAt = now.toISOString();
@@ -412,23 +789,33 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(state?.settings_json);
-      const knowledge = json(state?.knowledge_json);
-      const validated = validateSettings({ ...settings, brand: knowledge.brand || settings.brand, guardrails: knowledge.guardrails || settings.guardrails }, { allowedCtaHosts });
+      const knowledge = json(state?.business_knowledge_json, {});
+      const validated = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: knowledge });
+      const strategyStatus = await getStrategyStatus(c);
       const sessionId = settings.automationSessionId;
-      if (!state?.automation_enabled || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
+      if (!state?.automation_enabled || state.business_knowledge_approved !== 1 && state.business_knowledge_approved !== true
+        || !strategyStatus.ready || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
         || integration?.status !== 'ACTIVE' || !integration.model || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
+        if (state?.automation_enabled && !strategyStatus.ready) { await c.commit(); return { blocked: strategyStatus.reasonCode }; }
         await c.rollback();
         return null;
       }
       if (await hasProviderHold(c, integration.profile_id, integration.account_id)) { await c.commit(); return null; }
       const [[inFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
       if (inFlight) { await c.commit(); return null; }
-      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
+      let strategySnapshot = json(slot.content_strategy_json, null);
+      if (slot.status === 'ready' && (!strategySnapshot?.category?.id || !strategySnapshot?.style?.id)) {
+        await c.execute("UPDATE slots SET status='canceled',error_code='content_strategy_snapshot_missing',completed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='ready'", [slot.id]);
+        await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'slot_not_published',?)", [slot.id, JSON.stringify({ code: 'content_strategy_snapshot_missing' })]);
+        await c.commit();
+        return { blocked: 'CONTENT_STRATEGY_SNAPSHOT_MISSING' };
+      }
       if (!slot.tebar_profile_id || !slot.tebar_account_id || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id) {
         await c.execute("UPDATE slots SET status='canceled',error_code='target_snapshot_missing',completed_at=UTC_TIMESTAMP(3) WHERE id=? AND status IN ('pending','ready')", [slot.id]);
         await c.commit();
@@ -447,12 +834,23 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(settings)]);
       }
       if (slot.status === 'pending') {
+        const [categories] = await selectQuery(c, 'SELECT id,slug,name,guidance,active,archived_at FROM content_categories WHERE active=TRUE AND archived_at IS NULL ORDER BY id FOR UPDATE', [], 'query');
+        const [styles] = await selectQuery(c, 'SELECT id,slug,name,instructions,active,archived_at FROM content_styles WHERE active=TRUE AND archived_at IS NULL ORDER BY id FOR UPDATE', [], 'query');
+        const eligible = categories.length > 1 && strategyStatus.latestCategoryId
+          ? categories.filter((entry) => String(entry.id) !== strategyStatus.latestCategoryId) : categories;
+        const selectedCategory = selectUniform(eligible);
+        const selectedStyle = selectUniform(styles);
+        if (!selectedCategory || !selectedStyle) { await c.commit(); return { blocked: categories.length ? 'CONTENT_STYLES_EMPTY' : 'CONTENT_CATEGORIES_EMPTY' }; }
+        strategySnapshot = {
+          category: { id: String(selectedCategory.id), slug: selectedCategory.slug, name: selectedCategory.name, guidance: selectedCategory.guidance },
+          style: { id: String(selectedStyle.id), slug: selectedStyle.slug, name: selectedStyle.name, instructions: selectedStyle.instructions },
+        };
         await c.execute('INSERT INTO generation_slot_claims (slot_id,claimed_at) VALUES (?,?)', [slot.id, now]);
-        await c.execute("UPDATE slots SET status='generating',claimed_at=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, integration.model, integration.version, slot.id]);
+        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,model_config_version=?,content_category_id=?,content_style_id=?,content_strategy_json=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.version, selectedCategory.id, selectedStyle.id, JSON.stringify(strategySnapshot), slot.id]);
       }
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, contentStrategy: strategySnapshot, categoryId: strategySnapshot.category.id, styleId: strategySnapshot.style.id, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -461,13 +859,13 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c=await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[row]]=await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[row]]=await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
-      const settings=json(row?.settings_json);const knowledge=json(row?.knowledge_json);
+      const settings=json(row?.settings_json);const knowledge=json(row?.business_knowledge_json,{});
       const sessionId=settings.automationSessionId;
       const savedSchedule=settings.schedule||schedule||{};
-      const checked=validateSettings({...settings,schedule:savedSchedule,brand:knowledge.brand||settings.brand,guardrails:knowledge.guardrails||settings.guardrails},{allowedCtaHosts});
-      if(!row?.automation_enabled||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
+      const checked=validateNdiSettings({schedule:savedSchedule,hashtags:settings.hashtags||[],businessKnowledge:knowledge});
+      if(!row?.automation_enabled||row.business_knowledge_approved!==1&&row.business_knowledge_approved!==true||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
       if(await hasProviderHold(c,integration.profile_id,integration.account_id)){await c.commit();return {slot:null,created:false,skippedCount:0,held:true};}
       const scheduleChanged=JSON.stringify(settings.schedule||{})!==JSON.stringify(checked.settings.schedule);
       settings.schedule=checked.settings.schedule;
@@ -557,8 +955,10 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       await c.beginTransaction();
       const [[state]]=await selectQuery(c, 'SELECT automation_enabled,settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(state?.settings_json).automationSessionId;
-      const [[slot]]=await selectQuery(c, 'SELECT automation_session_id,status FROM slots WHERE id=? FOR UPDATE',[id]);
-      if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating') { await c.rollback(); return false; }
+      const [[slot]]=await selectQuery(c, 'SELECT automation_session_id,status,content_category_id,content_style_id,content_strategy_json FROM slots WHERE id=? FOR UPDATE',[id]);
+      const strategy = json(slot?.content_strategy_json, null);
+      if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating'
+        || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id) { await c.rollback(); return false; }
       const [updated]=await mutationQuery(c, "UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),JSON.stringify(factVersions),contentSafetyHash,id,sessionId]);
       await c.commit();
       return updated.affectedRows===1;
@@ -569,12 +969,14 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
+      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
       const payload = json(slot?.request_payload);
-      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || !sessionId || slot.automation_session_id!==sessionId
+      const strategy = json(slot?.content_strategy_json, null);
+      if (!slot || slot.status !== 'ready' || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id
+        || !settings?.automation_enabled || settings.business_knowledge_approved!==1&&settings.business_knowledge_approved!==true || !sessionId || slot.automation_session_id!==sessionId
         || integration?.status !== 'ACTIVE' || !slot.tebar_profile_id || !slot.tebar_account_id
         || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id
         || payload?.targets?.length !== 1 || payload.targets[0]?.account_id !== slot.tebar_account_id) { await c.rollback(); return false; }
@@ -589,33 +991,25 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         return 'in_flight';
       }
       const config = json(settings.settings_json);
-      const knowledge = json(settings.knowledge_json);
-      const currentHash = contentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
-      const previousHash = legacyContentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
-      if (!slot.content_safety_hash || !currentHash || ![currentHash, previousHash].includes(slot.content_safety_hash)) {
+      const knowledge = json(settings.business_knowledge_json, {});
+      const ndiSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
+      const currentHash = ndiSettings.valid ? contentSafetyHash(ndiSettings.settings) : null;
+      const captionCheck = validateNdiCaption(payload?.content, {
+        ctaUrl: slot.cta_url,
+        hashtags: ndiSettings.settings?.hashtags || [],
+        forbiddenClaims: ndiSettings.settings?.businessKnowledge?.forbiddenClaims || [],
+      });
+      if (!slot.content_safety_hash || !currentHash || slot.content_safety_hash !== currentHash || !captionCheck.valid) {
         await c.rollback(); return 'stale_facts';
       }
       const ids = json(slot.fact_ids, []);
       const versions = json(slot.fact_versions, []);
       if (!Array.isArray(ids) || !Array.isArray(versions)
-        || (slot.fact_bearing && !ids.length)
-        || new Set(ids.map(String)).size !== ids.length
-        || new Set(versions.map((version) => String(version?.id))).size !== versions.length
-        || ids.some((id) => !versions.some((version) => version?.id === id))
-        || versions.some((version) => !version || !version.id || !version.updatedAt)) {
+        || slot.fact_bearing || ids.length || versions.length) {
         await c.rollback(); return 'stale_facts';
       }
-      for (const version of versions) {
-        const [[fact]] = await selectQuery(c, 'SELECT service,active,updated_at FROM service_facts WHERE service=? FOR UPDATE', [version.id]);
-        const sourceTime = fact?.updated_at ? new Date(fact.updated_at).getTime() : NaN;
-        const expectedTime = new Date(version.updatedAt).getTime();
-        if (!fact || !isFactFresh({ active: Boolean(fact.active), updatedAt: fact.updated_at }, now)
-          || !Number.isFinite(expectedTime) || sourceTime !== expectedTime) {
-          await c.rollback(); return 'stale_facts';
-        }
-      }
       const [[last]] = await selectQuery(c, "SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId,id]);
-      const checkedSettings = validateSettings({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails }, { allowedCtaHosts });
+      const checkedSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
       if (!checkedSettings.valid) { await c.rollback(); return 'stale_facts'; }
       const cadenceMs = checkedSettings.settings.schedule.intervalMinutes * 60_000;
       if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < cadenceMs) {
@@ -653,10 +1047,10 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         if (!['publishing', 'unknown', 'published', 'failed', 'partial', 'canceled'].includes(patch?.status)) {
           throw new TypeError('publication outcome status is invalid');
         }
-        const allowed = { status: 'status', providerPostId: 'provider_post_id', providerStatus: 'provider_status', errorCode: 'error_code', completedAt: 'completed_at' };
-        const keys = Object.keys(patch || {}).filter((key) => allowed[key]);
+        const allowed = { status: 'status', providerPostId: 'provider_post_id', providerStatus: 'provider_status', errorCode: 'error_code', completedAt: 'completed_at', providerPublishedAt: 'provider_published_at' };
+        const keys = Object.keys(patch || {}).filter((key) => allowed[key] && !(key === 'providerPublishedAt' && patch[key] == null));
         if (!keys.length) throw new TypeError('publication outcome is required');
-        const values = [...keys.map((key) => key === 'completedAt' ? normalizeCompletedAt(patch[key]) : patch[key]), id];
+        const values = [...keys.map((key) => key === 'completedAt' ? normalizeCompletedAt(patch[key]) : key === 'providerPublishedAt' ? normalizeProviderPublishedAt(patch[key]) : patch[key]), id];
         await c.execute(
           `UPDATE slots SET ${keys.map((key) => `${allowed[key]}=?`).join(',')} WHERE id=? AND status='publishing' AND provider_post_id IS NULL`,
           values,
@@ -724,10 +1118,10 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
   }
   async function updateSlot(id,patch) {
     if (patch.status === 'admin_closed_unknown') throw publicationError('PUBLICATION_RESOLUTION_REQUIRED');
-    const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};
-    const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;
+    const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at',providerPublishedAt:'provider_published_at'};
+    const keys=Object.keys(patch).filter(k=>allowed[k] && !(k==='providerPublishedAt' && patch[k] == null));if(!keys.length)return;
     const sql=keys.map(k=>`${allowed[k]}=?`).join(',');
-    const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id];
+    const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):k==='providerPublishedAt'?normalizeProviderPublishedAt(patch[k]):patch[k]),id];
     const guarded=typeof patch.status==='string';
     const conflictGuard = guarded && patch.status !== 'published'
       ? " AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')" : '';
@@ -736,6 +1130,20 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
     if(!['published','failed','partial','canceled'].includes(patch.status)){const [updated]=await mutationQuery(pool, `UPDATE slots SET ${sql}${where}`,values);return updated.affectedRows>0;}
     const c=await pool.getConnection();try{
       await c.beginTransaction();
+      if (patch.providerPublishedAt != null) {
+        const [[current]] = await selectQuery(c, 'SELECT provider_published_at FROM slots WHERE id=? FOR UPDATE', [id]);
+        const incoming = normalizeProviderPublishedAt(patch.providerPublishedAt);
+        const currentValue = current?.provider_published_at;
+        const currentTime = currentValue instanceof Date ? currentValue.getTime()
+          : typeof currentValue === 'string' ? Date.parse(`${currentValue.replace(' ', 'T')}Z`) : NaN;
+        const incomingTime = Date.parse(`${incoming.replace(' ', 'T')}Z`);
+        if (Number.isFinite(currentTime) && currentTime !== incomingTime) {
+          await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status NOT IN ('admin_closed_unknown')", [id]);
+          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)", [id, JSON.stringify({ code: 'provider_timestamp_conflict' })]);
+          await c.commit();
+          return false;
+        }
+      }
       const [updated]=await mutationQuery(c, `UPDATE slots SET ${sql}${where}`,values);
       if(updated.affectedRows) await suppressPendingNotices(c,id,patch.status);
       else if(patch.status==='published') {
@@ -964,9 +1372,9 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       await c.beginTransaction();
       try { await c.execute('INSERT INTO webhook_events (event_id,payload_hash) VALUES (?,?)',[eventId,payloadHash]); }
       catch(e) { if(e.code==='ER_DUP_ENTRY'){await c.rollback();return false;} throw e; }
-      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1', [], 'query');
+      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,business_knowledge_json,automation_enabled FROM settings WHERE id=1', [], 'query');
       const configured=json(settingsRow?.settings_json);
-      const knowledge=json(settingsRow?.knowledge_json);
+      const knowledge=json(settingsRow?.business_knowledge_json,{});
       const eventType=String(type||'');
       const target = data.target && typeof data.target === 'object' && !Array.isArray(data.target)
         ? /** @type {Record<string, unknown>} */ (data.target) : {};
@@ -976,7 +1384,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
       const dataAccount = typeof accountValue === 'string' ? accountValue : null;
       const postId=data.post_id||data.id;
       const [[eventSlot]]=typeof postId==='string'&&eventType.startsWith('post.')
-        ? await selectQuery(c, 'SELECT id,automation_session_id,status,provider_status,tebar_profile_id,tebar_account_id FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]) : [[]];
+        ? await selectQuery(c, 'SELECT id,automation_session_id,status,provider_status,provider_published_at,tebar_profile_id,tebar_account_id FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]) : [[]];
       const postMatches=Boolean(eventSlot?.tebar_profile_id && eventSlot?.tebar_account_id
         && eventSlot.tebar_profile_id===profileId && eventSlot.tebar_account_id===dataAccount);
       const expectedAccount=eventSlot?.tebar_account_id;
@@ -984,9 +1392,9 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         const targetMatches= target.account_id===expectedAccount
           && (!target.platform||String(target.platform).toLowerCase()==='threads');
         const value=data.published_at||(targetMatches?target.published_at:null);
-        if(typeof value!=='string'&&!(value instanceof Date))return null;
-        const parsed=new Date(value);
-        return Number.isFinite(parsed.getTime())?parsed:null;
+        if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
+        try { return new Date(`${normalizeProviderPublishedAt(value).replace(' ', 'T')}Z`); }
+        catch { return null; }
       })();
       let activeSessionCanceledPost=false;
       let staleTerminalCancellation=false;
@@ -998,18 +1406,23 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
         const terminalStatuses=['published','failed','partial','canceled','skipped'];
         const slotIsTerminal=terminalStatuses.includes(slot?.status);
         const conflictingPublication=slotIsTerminal&&slot.status!=='published'&&providerStatus==='published';
+        const currentProviderValue = slot?.provider_published_at;
+        const currentProviderTime = currentProviderValue instanceof Date ? currentProviderValue.getTime()
+          : typeof currentProviderValue === 'string' ? Date.parse(`${currentProviderValue.replace(' ', 'T')}Z`) : NaN;
+        const conflictingProviderTime = providerStatus === 'published' && webhookPublishedAt
+          && Number.isFinite(currentProviderTime) && currentProviderTime !== webhookPublishedAt.getTime();
         const delayedNonterminal=slotIsTerminal&&(!['published','failed','partial','canceled'].includes(providerStatus) || (slot.provider_status && providerStatus!==slot.provider_status));
         staleTerminalCancellation=slotIsTerminal&&providerStatus==='canceled';
-        if(conflictingPublication) {
+        if(conflictingPublication || conflictingProviderTime) {
           await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=?",[slot.id]);
-          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:'unknown_outcome'})]);
+          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:conflictingProviderTime?'provider_timestamp_conflict':'unknown_outcome'})]);
         } else if(!delayedNonterminal&&!staleTerminalCancellation) {
           const activeSession=Boolean(settingsRow?.automation_enabled)&&slot?.automation_session_id===configured.automationSessionId;
           activeSessionCanceledPost=providerStatus==='canceled'&&activeSession;
           const slotStatus=activeSessionCanceledPost?'failed':providerStatus;
           const final=['published','failed','partial','canceled'].includes(slotStatus);
           const completedAt=providerStatus==='published'?webhookPublishedAt:null;
-          await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,postId]);
+          await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at),provider_published_at=IF(? IS NOT NULL,COALESCE(provider_published_at,?),provider_published_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,providerStatus==='published'?webhookPublishedAt:null,providerStatus==='published'?webhookPublishedAt:null,postId]);
           if(slot && final) await suppressPendingNotices(c,slot.id,slotStatus);
         }
       }
@@ -1022,7 +1435,7 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
           const expectedStatus=notificationCode==='post_published'?'published':'failed';
           if(slot && (slot.status===expectedStatus || (expectedStatus==='failed' && slot.status==='partial')) && message) {
             dedupeId=`${notificationCode}:slot:${slot.id}`;
-            message=formatSlotNotice({status:expectedStatus,slotId:slot.id,brand:knowledge.brand?.name||configured.brand?.name,
+            message=formatSlotNotice({status:expectedStatus,slotId:slot.id,brand:knowledge.companyName || 'Nusa Data Indonesia',
               time:slot.completed_at||slot.scheduled_at,timezone:configured.schedule?.timezone,pillar:slot.pillar,caption:slot.caption,
               reason:slot.error_code||'provider_error',nextAt:settingsRow?.automation_enabled?configured.nextSlotAt:null});
           } else message=null;
@@ -1060,8 +1473,8 @@ function createRepository(pool, { allowedCtaHosts = [] } = {}) {
   async function claimDailySummary({localDate,timezone}) { return reserveDailySummary(localDate,timezone); }
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
-  async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {}),...(status==='published'&&(details.providerPublishedAt||details.publishedAt)?{providerPublishedAt:details.providerPublishedAt||details.publishedAt}:{})});return true; }
+  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,getWebsiteSyncState,startWebsiteSyncRun,completeWebsiteSyncRun,failWebsiteSyncRun,reviewWebsiteKnowledgeProposal,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

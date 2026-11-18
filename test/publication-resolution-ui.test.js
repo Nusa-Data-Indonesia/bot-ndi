@@ -94,11 +94,11 @@ test('lists all blockers, renders caption and evidence as text, and offers actio
   assert.ok(fields.includes('original-account'));
   assert.ok(fields.includes('network_error'));
   assert.ok(fields.some((value) => /16[.:]01[.:]58/.test(value) && /WIB/.test(value)));
-  assert.ok(button(cards[0], /Close as Unverified/));
+  assert.ok(button(cards[0], /Tutup sebagai tidak terverifikasi/i));
   assert.ok(button(cards[0], /Kaitkan/));
-  assert.ok(!button(cards[1], /Close as Unverified|Kaitkan/));
-  assert.ok(!button(cards[2], /Close as Unverified|Kaitkan/));
-  assert.ok(button(cards[3], /Close as Unverified/));
+  assert.ok(!button(cards[1], /Tutup sebagai tidak terverifikasi|Kaitkan/i));
+  assert.ok(!button(cards[2], /Tutup sebagai tidak terverifikasi|Kaitkan/i));
+  assert.ok(button(cards[3], /Tutup sebagai tidak terverifikasi/i));
   assert.equal(button(cards[3], /Kaitkan/), undefined);
   assert.ok(descendants(cards[3]).some((el) => /target asal.*tidak cocok|target asal.*belum lengkap/i.test(el.textContent)));
   assert.ok(descendants(node('#publication-resolution-history')).some((el) => el.textContent.includes(xss)));
@@ -109,7 +109,7 @@ test('legacy unknown slots can be closed with evidence but cannot link a post wi
   const legacy = { ...unknown, profileId: null, accountId: null, resolutionEligible: true, resolutionTargetValid: false };
   render([legacy]);
   const card = node('#publication-blockers').children[0];
-  assert.ok(button(card, /Close as Unverified/));
+  assert.ok(button(card, /Tutup sebagai tidak terverifikasi/i));
   assert.equal(button(card, /Kaitkan/), undefined);
   assert.ok(descendants(card).some(el => /target asal.*belum lengkap/i.test(el.textContent)));
 });
@@ -117,7 +117,7 @@ test('legacy unknown slots can be closed with evidence but cannot link a post wi
 test('close requires reason, evidence and delayed publication acknowledgement', async () => {
   const { node, form, render, submit, requests, refreshes } = harness();
   render([unknown]);
-  button(node('#publication-blockers').children[0], /Close as Unverified/).listeners.click();
+  button(node('#publication-blockers').children[0], /Tutup sebagai tidak terverifikasi/i).listeners.click();
   assert.match(node('#publication-resolution-guidance').textContent, /masih mungkin.*muncul/i);
   assert.match(node('#publication-resolution-confirm-label').textContent, /terlambat/i);
   await submit();

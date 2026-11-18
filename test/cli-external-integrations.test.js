@@ -25,7 +25,14 @@ test('CLI startup and manual dispatch stay inert with populated credentials unti
   };
   const observed = { providerRequests: 0, dispatches: 0, schedulerCreations: 0, notifierCreations: 0, poolEnds: 0 };
   const pool = { end: async () => { observed.poolEnds++; }, execute: async () => [[]] };
-  const repository = { setAutomationEnabled: async () => ({ changed: false }) };
+  const repository = {
+    setAutomationEnabled: async () => ({ changed: false }),
+    startWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
+    completeWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
+    failWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
+    claimCategoryProposalRun: async () => { throw new Error('disabled category proposal job must not run during startup'); },
+    finishCategoryProposalRun: async () => { throw new Error('disabled category proposal job must not run during startup'); },
+  };
   const configuration = {
     bootstrap: async () => {},
     getActive: async () => ({ status: 'ACTIVE', profileId: config.tebar.profileId, accountId: config.tebar.accountId, model: config.openRouter.model }),
