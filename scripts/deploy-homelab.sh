@@ -7,6 +7,13 @@ fail() {
   exit 1
 }
 
+set_deployment_result() {
+  local result="$1"
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf 'result=%s\n' "$result" >> "$GITHUB_OUTPUT"
+  fi
+}
+
 is_full_sha() {
   [[ "$1" =~ ^[a-f0-9]{40}$ ]]
 }
@@ -98,17 +105,43 @@ fi
 
 WORKSPACE="${GITHUB_WORKSPACE:-}"
 REPOSITORY="${GITHUB_REPOSITORY:-}"
-COMMIT_SHA="${BOT_NDI_COMMIT_SHA:-${GITHUB_SHA:-}}"
+DEPLOYMENT_MODE="${BOT_NDI_DEPLOYMENT_MODE:-}"
+if [[ "$DEPLOYMENT_MODE" == manual ]]; then
+  COMMIT_SHA="${BOT_NDI_COMMIT_SHA:-${GITHUB_SHA:-}}"
+else
+  COMMIT_SHA="${BOT_NDI_COMMIT_SHA:-}"
+fi
 ROLLBACK_SHA="${BOT_NDI_ROLLBACK_SHA:-}"
 RUN_ID="${GITHUB_RUN_ID:-}"
 RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-}"
+CI_RUN_ID="${BOT_NDI_CI_RUN_ID:-}"
+CI_RUN_ATTEMPT="${BOT_NDI_CI_RUN_ATTEMPT:-}"
+CI_WORKFLOW_ID="${BOT_NDI_CI_WORKFLOW_ID:-}"
 
-if [[ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ||
-      "${GITHUB_REF:-}" != "refs/heads/main" ||
-      "$REPOSITORY" != "Nusa-Data-Indonesia/bot-ndi" ||
-      -z "$WORKSPACE" ||
-      "$COMMIT_SHA" != "${GITHUB_SHA:-}" ]]; then
-  fail "manual main-branch deployment provenance is invalid; refusing deployment."
+if [[ -z "$WORKSPACE" || "$REPOSITORY" != "Nusa-Data-Indonesia/bot-ndi" ||
+      "${GITHUB_REF:-}" != "refs/heads/main" ]]; then
+  fail "deployment repository or main-branch provenance is invalid; refusing deployment."
+fi
+case "$DEPLOYMENT_MODE" in
+  manual)
+    if [[ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" || "$COMMIT_SHA" != "${GITHUB_SHA:-}" ||
+          -z "${RELEASE_GITHUB_TOKEN:-}" ]]; then
+      fail "manual main-branch deployment provenance is invalid; refusing deployment."
+    fi
+    ;;
+  automatic)
+    if [[ "${GITHUB_EVENT_NAME:-}" != "workflow_run" || -n "$ROLLBACK_SHA" ||
+          -z "${RELEASE_GITHUB_TOKEN:-}" ]]; then
+      fail "automatic deployment provenance or rollback input is invalid; refusing deployment."
+    fi
+    ;;
+  *)
+    fail "deployment mode is missing or invalid; refusing deployment."
+    ;;
+esac
+if [[ ! "$CI_RUN_ID" =~ ^[1-9][0-9]*$ || ! "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ||
+      ! "$CI_WORKFLOW_ID" =~ ^[1-9][0-9]*$ ]]; then
+  fail "verified CI run identity is missing or invalid."
 fi
 if ! is_full_sha "$COMMIT_SHA"; then
   fail "deployment commit is not a full commit SHA."
@@ -190,17 +223,35 @@ HOST_PORT_VALUE="$(file_value "$ENV_FILE" HOST_PORT)"
 if [[ ! "$HOST_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ ]] || (( HOST_PORT_VALUE > 65535 )); then
   fail "HOST_PORT must be a TCP port between 1 and 65535."
 fi
+HEALTH_RETRIES="${BOT_NDI_HEALTH_RETRIES:-15}"
+HEALTH_RETRY_DELAY="${BOT_NDI_HEALTH_RETRY_DELAY:-2}"
+if [[ ! "$HEALTH_RETRIES" =~ ^[1-9][0-9]*$ || ! "$HEALTH_RETRY_DELAY" =~ ^[0-9]+$ ]]; then
+  fail "health-check retry configuration is invalid."
+fi
 
 ACTIVE_LINK="$APP_DIR/active"
 PREVIOUS_RELEASE_FILE="$APP_DIR/previous-release"
 STATE_DIR="$APP_DIR/state"
 VOLUME_MARKER="$STATE_DIR/database-volume"
 VOLUME_NAME="bot-ndi_mysql_data"
+SCHEMA_BASELINE_FILE="$STATE_DIR/database-schema-baseline"
+SCHEMA_TRACKING_FILE="$STATE_DIR/database-schema-tracking"
+MIGRATION_IN_PROGRESS_FILE="$STATE_DIR/database-migration-in-progress"
+AUTO_DEPLOYMENT_HOLD_FILE="$STATE_DIR/automatic-deployment-hold"
+SCHEMA_BASELINE_SHA=""
+SCHEMA_TRACKING_ENABLED=false
+MIGRATION_IN_PROGRESS=false
+AUTO_DEPLOYMENT_HOLD_SHA=""
+AUTO_DEPLOYMENT_HOLD_EXISTED=false
+AUTO_DEPLOYMENT_HOLD_VALUE=""
+PREVIOUS_RELEASE_EXISTED=false
+PREVIOUS_RELEASE_VALUE=""
+PREVIOUS_RELEASE_SHA=""
 
 if [[ -n "${DOCKER_HOST:-}" || -n "${DOCKER_CONTEXT:-}" ]]; then
   fail "remote Docker endpoint overrides are not allowed on the Bot NDI runner."
 fi
-for command_name in docker git tar curl awk grep stat readlink mktemp install mv head date ln rm cat sleep mkdir ip; do
+for command_name in docker git tar curl awk grep stat readlink mktemp install mv head date ln rm cat sleep mkdir ip node; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required deployment command $command_name is unavailable."
 done
 docker info >/dev/null 2>&1 || fail "local Docker Engine is unavailable."
@@ -213,6 +264,13 @@ DOCKER_ENDPOINT="$(docker context inspect --format '{{(index .Endpoints "docker"
 if [[ "$DOCKER_ENDPOINT" != unix://* ]]; then
   fail "Docker context must point to the local Unix socket."
 fi
+
+check_latest_main_head() {
+  if ! GITHUB_REPOSITORY="$REPOSITORY" COMMIT_SHA="$COMMIT_SHA" RELEASE_GITHUB_TOKEN="$RELEASE_GITHUB_TOKEN" \
+       node "$WORKSPACE/scripts/check-release-head.js" >/dev/null; then
+    fail "release is no longer the current main head; refusing to continue."
+  fi
+}
 
 INITIAL_BOOTSTRAP=true
 ACTIVE_TARGET=""
@@ -241,6 +299,40 @@ if [[ -L "$ACTIVE_LINK" ]]; then
   fi
 elif [[ -e "$ACTIVE_LINK" ]]; then
   fail "active release path exists but is not a symlink."
+fi
+
+if [[ -e "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
+  if [[ ! -f "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
+    fail "previous-release pointer is not a regular file; refusing before image build or migration."
+  fi
+  PREVIOUS_RELEASE_VALUE="$(cat "$PREVIOUS_RELEASE_FILE")"
+  if [[ ! "$PREVIOUS_RELEASE_VALUE" =~ ^[a-f0-9]{40}-[1-9][0-9]*-[1-9][0-9]*$ ]]; then
+    fail "previous-release pointer contains an invalid release identity; refusing before image build or migration."
+  fi
+  PREVIOUS_RELEASE_SHA="${PREVIOUS_RELEASE_VALUE:0:40}"
+  PREVIOUS_RELEASE_DIR="$APP_DIR/releases/$PREVIOUS_RELEASE_VALUE"
+  if [[ ! -d "$PREVIOUS_RELEASE_DIR" || -L "$PREVIOUS_RELEASE_DIR" ||
+        ! -f "$PREVIOUS_RELEASE_DIR/metadata.json" ||
+        ! -f "$PREVIOUS_RELEASE_DIR/compose.yaml" ||
+        ! -f "$PREVIOUS_RELEASE_DIR/release.env" ||
+        ! -f "$PREVIOUS_RELEASE_DIR/health-verified.json" ||
+        -L "$PREVIOUS_RELEASE_DIR/health-verified.json" ]] ||
+     ! grep -Fq "\"commit\":\"$PREVIOUS_RELEASE_SHA\"" "$PREVIOUS_RELEASE_DIR/metadata.json" ||
+     ! grep -Fq "\"releaseId\":\"$PREVIOUS_RELEASE_VALUE\"" "$PREVIOUS_RELEASE_DIR/metadata.json" ||
+     ! grep -Fq "\"image\":\"bot-ndi:$PREVIOUS_RELEASE_VALUE\"" "$PREVIOUS_RELEASE_DIR/metadata.json" ||
+     ! grep -Fq "\"commit\":\"$PREVIOUS_RELEASE_SHA\"" "$PREVIOUS_RELEASE_DIR/health-verified.json" ||
+     ! grep -Fq "\"releaseId\":\"$PREVIOUS_RELEASE_VALUE\"" "$PREVIOUS_RELEASE_DIR/health-verified.json" ||
+     ! grep -Fq "\"image\":\"bot-ndi:$PREVIOUS_RELEASE_VALUE\"" "$PREVIOUS_RELEASE_DIR/health-verified.json" ||
+     ! grep -Fq '"health":"passed"' "$PREVIOUS_RELEASE_DIR/health-verified.json" ||
+     ! file_value_matches "$PREVIOUS_RELEASE_DIR/release.env" BOT_NDI_IMAGE_TAG "$PREVIOUS_RELEASE_VALUE" ||
+     ! file_value_matches "$PREVIOUS_RELEASE_DIR/release.env" BOT_NDI_COMMIT_SHA "$PREVIOUS_RELEASE_SHA"; then
+    fail "previous-release pointer target is not a health-verified retained release; refusing before image build or migration."
+  fi
+  PREVIOUS_RELEASE_IMAGE_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "bot-ndi:$PREVIOUS_RELEASE_VALUE" 2>/dev/null || true)"
+  if [[ "$PREVIOUS_RELEASE_IMAGE_REVISION" != "$PREVIOUS_RELEASE_SHA" ]]; then
+    fail "previous-release pointer image cannot be verified; refusing before image build or migration."
+  fi
+  PREVIOUS_RELEASE_EXISTED=true
 fi
 PRE_DEPLOY_ACTIVE_TARGET="$ACTIVE_TARGET"
 
@@ -312,6 +404,9 @@ if [[ -f "$VOLUME_MARKER" ]]; then
     fail "database volume state marker is invalid."
   fi
   VOLUME_STATE="$(awk -F= '$1 == "state" { print $2 }' "$VOLUME_MARKER")"
+  if [[ "$INITIAL_BOOTSTRAP" == false && "$VOLUME_STATE" != ready ]]; then
+    fail "an active release requires a ready persistent MySQL volume marker."
+  fi
   if [[ "$VOLUME_STATE" == "ready" ]]; then
     docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1 ||
       fail "persistent MySQL volume is missing; refusing to create a replacement database."
@@ -321,6 +416,97 @@ elif [[ "$INITIAL_BOOTSTRAP" == false ]]; then
 else
   docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1 &&
     fail "an existing MySQL volume has no Bot NDI bootstrap marker; refusing to reuse it."
+fi
+
+if [[ -e "$SCHEMA_TRACKING_FILE" || -L "$SCHEMA_TRACKING_FILE" ]]; then
+  if [[ ! -f "$SCHEMA_TRACKING_FILE" || -L "$SCHEMA_TRACKING_FILE" ]] ||
+     [[ "$(cat "$SCHEMA_TRACKING_FILE" 2>/dev/null || true)" != "version=1" ]]; then
+    fail "database schema tracking marker is invalid; operator reconciliation is required."
+  fi
+  SCHEMA_TRACKING_ENABLED=true
+fi
+
+if [[ -e "$SCHEMA_BASELINE_FILE" || -L "$SCHEMA_BASELINE_FILE" ]]; then
+  if [[ ! -f "$SCHEMA_BASELINE_FILE" || -L "$SCHEMA_BASELINE_FILE" ]]; then
+    fail "database schema baseline is not a regular file; operator reconciliation is required."
+  fi
+  SCHEMA_BASELINE_SHA="$(cat "$SCHEMA_BASELINE_FILE")"
+  if ! is_full_sha "$SCHEMA_BASELINE_SHA"; then
+    fail "database schema baseline cannot be verified from release history; operator reconciliation is required."
+  fi
+  if [[ "$DEPLOYMENT_MODE" == automatic ]] &&
+     ! git -C "$WORKSPACE" cat-file -e "$SCHEMA_BASELINE_SHA^{commit}" 2>/dev/null; then
+    fail "database schema baseline is missing from release history; operator reconciliation is required."
+  fi
+elif [[ "$SCHEMA_TRACKING_ENABLED" == true ]]; then
+  fail "managed database schema baseline is missing; operator reconciliation is required."
+fi
+
+if [[ -e "$AUTO_DEPLOYMENT_HOLD_FILE" || -L "$AUTO_DEPLOYMENT_HOLD_FILE" ]]; then
+  if [[ ! -f "$AUTO_DEPLOYMENT_HOLD_FILE" || -L "$AUTO_DEPLOYMENT_HOLD_FILE" ]]; then
+    fail "automatic deployment hold is invalid; operator reconciliation is required."
+  fi
+  AUTO_DEPLOYMENT_HOLD_SHA="$(cat "$AUTO_DEPLOYMENT_HOLD_FILE")"
+  if ! is_full_sha "$AUTO_DEPLOYMENT_HOLD_SHA"; then
+    fail "automatic deployment hold cannot be verified; operator reconciliation is required."
+  fi
+  AUTO_DEPLOYMENT_HOLD_EXISTED=true
+  AUTO_DEPLOYMENT_HOLD_VALUE="$AUTO_DEPLOYMENT_HOLD_SHA"
+fi
+
+if [[ -e "$MIGRATION_IN_PROGRESS_FILE" || -L "$MIGRATION_IN_PROGRESS_FILE" ]]; then
+  if [[ ! -f "$MIGRATION_IN_PROGRESS_FILE" || -L "$MIGRATION_IN_PROGRESS_FILE" ]] ||
+     ! is_full_sha "$(cat "$MIGRATION_IN_PROGRESS_FILE" 2>/dev/null || true)"; then
+    fail "database migration state is invalid; operator reconciliation is required."
+  fi
+  MIGRATION_IN_PROGRESS=true
+fi
+
+if [[ "$DEPLOYMENT_MODE" == automatic ]]; then
+  if [[ "$INITIAL_BOOTSTRAP" != false ]]; then
+    fail "automatic deployment requires an existing verified release."
+  fi
+  ACTIVE_HEALTH_MARKER="$APP_DIR/$ACTIVE_TARGET/health-verified.json"
+  if [[ ! -f "$ACTIVE_HEALTH_MARKER" || -L "$ACTIVE_HEALTH_MARKER" ]] ||
+     ! grep -Fq "\"commit\":\"$ACTIVE_SHA\"" "$ACTIVE_HEALTH_MARKER" ||
+     ! grep -Fq "\"releaseId\":\"$ACTIVE_RELEASE_ID\"" "$ACTIVE_HEALTH_MARKER" ||
+     ! grep -Fq "\"image\":\"bot-ndi:$ACTIVE_RELEASE_ID\"" "$ACTIVE_HEALTH_MARKER" ||
+     ! grep -Fq '"health":"passed"' "$ACTIVE_HEALTH_MARKER"; then
+    fail "automatic deployment requires a health-verified active release baseline."
+  fi
+  if [[ "$MIGRATION_IN_PROGRESS" == true ]]; then
+    fail "automatic deployment is blocked by an unverified database migration; operator reconciliation is required."
+  fi
+  if [[ "$AUTO_DEPLOYMENT_HOLD_SHA" == "$COMMIT_SHA" ]]; then
+    fail "automatic deployment is blocked by an operator-requested rollback for this main commit."
+  fi
+  if [[ -z "$SCHEMA_BASELINE_SHA" ]]; then
+    SCHEMA_BASELINE_SHA="$ACTIVE_SHA"
+  fi
+  if ! git -C "$WORKSPACE" cat-file -e "$SCHEMA_BASELINE_SHA^{commit}" 2>/dev/null; then
+    fail "automatic migration compatibility cannot be verified from the schema baseline SHA."
+  fi
+  if git -C "$WORKSPACE" diff --quiet "$SCHEMA_BASELINE_SHA" "$COMMIT_SHA" -- \
+    migrations/ src/migrate.js src/cli.js src/db.js src/config.js package.json package-lock.json \
+    Dockerfile compose.yaml .dockerignore Dockerfile.dockerignore .gitattributes; then
+    :
+  else
+    DIFF_STATUS=$?
+    if [[ "$DIFF_STATUS" -eq 1 ]]; then
+      fail "automatic deployment is blocked because the database migration or startup execution surface changed; use the reviewed manual deployment procedure."
+    fi
+    fail "automatic migration compatibility comparison failed; refusing deployment."
+  fi
+  if [[ "$ACTIVE_SHA" != "$COMMIT_SHA" && "$PREVIOUS_RELEASE_SHA" == "$COMMIT_SHA" ]]; then
+    fail "automatic deployment is blocked after an operator rollback of this main commit; use manual redeployment or advance main."
+  fi
+fi
+check_latest_main_head
+
+if [[ "$DEPLOYMENT_MODE" == automatic && "$ACTIVE_SHA" == "$COMMIT_SHA" ]]; then
+  printf 'Automatic deployment skipped; verified commit %s is already active.\n' "$COMMIT_SHA"
+  set_deployment_result "already_active"
+  exit 0
 fi
 
 mkdir -p "$APP_DIR/source" "$APP_DIR/releases" "$APP_DIR/backups" "$STATE_DIR"
@@ -339,15 +525,20 @@ RELEASE_DIR="$APP_DIR/releases/$RELEASE_ID"
 RELEASE_STAGING=""
 CANDIDATE_APP_ATTEMPTED=false
 PREVIOUS_APP_STOPPED=false
+PREVIOUS_APP_STOP_ATTEMPTED=false
 DEPLOYMENT_PROMOTED=false
 VERIFICATION_MARKER_CREATED=false
 VERIFICATION_MARKER_TMP=""
 VERIFICATION_MARKER=""
+MIGRATION_MARKER_TMP=""
+SCHEMA_BASELINE_TMP=""
+SCHEMA_TRACKING_TMP=""
+AUTO_HOLD_TMP=""
+AUTO_HOLD_RESTORE_TMP=""
+AUTO_HOLD_UPDATE_STARTED=false
 PREVIOUS_RELEASE_TMP=""
 PREVIOUS_RELEASE_RESTORE_TMP=""
 PREVIOUS_RELEASE_UPDATE_STARTED=false
-PREVIOUS_RELEASE_EXISTED=false
-PREVIOUS_RELEASE_VALUE=""
 PREVIOUS_SHA=""
 PREVIOUS_RELEASE_ID=""
 COMPOSE_ARGS=()
@@ -402,7 +593,8 @@ cleanup_deployment() {
     if [[ "$CANDIDATE_APP_ATTEMPTED" == true ]]; then
       compose stop app >/dev/null 2>&1 || true
     fi
-    if [[ "$PRE_DEPLOY_ACTIVE_TARGET" != "" ]]; then
+    if [[ "$PRE_DEPLOY_ACTIVE_TARGET" != "" &&
+          ( "$CANDIDATE_APP_ATTEMPTED" == true || "$PREVIOUS_APP_STOP_ATTEMPTED" == true ) ]]; then
       rollback_to_previous_release || true
     elif [[ "$CANDIDATE_APP_ATTEMPTED" == true ]]; then
       printf 'Deployment recovery: no previous app release exists; the failed first-deploy candidate was stopped.\n' >&2
@@ -424,6 +616,22 @@ cleanup_deployment() {
           printf 'Deployment warning: failed to remove the uncommitted previous-release pointer.\n' >&2
       fi
     fi
+    if [[ "$AUTO_HOLD_UPDATE_STARTED" == true ]]; then
+      if [[ "$AUTO_DEPLOYMENT_HOLD_EXISTED" == true ]]; then
+        AUTO_HOLD_RESTORE_TMP="$(mktemp "$STATE_DIR/.automatic-deployment-hold-restore.${COMMIT_SHA}.XXXXXX" 2>/dev/null || true)"
+        if [[ -n "$AUTO_HOLD_RESTORE_TMP" ]] &&
+           printf '%s\n' "$AUTO_DEPLOYMENT_HOLD_VALUE" > "$AUTO_HOLD_RESTORE_TMP" &&
+           mv -f "$AUTO_HOLD_RESTORE_TMP" "$AUTO_DEPLOYMENT_HOLD_FILE"; then
+          AUTO_HOLD_RESTORE_TMP=""
+        else
+          printf 'Deployment warning: failed to restore the automatic deployment hold; inspect state before retrying.\n' >&2
+        fi
+      elif [[ -f "$AUTO_DEPLOYMENT_HOLD_FILE" && ! -L "$AUTO_DEPLOYMENT_HOLD_FILE" ]] &&
+           [[ "$(cat "$AUTO_DEPLOYMENT_HOLD_FILE" 2>/dev/null || true)" == "$COMMIT_SHA" ]]; then
+        rm -f -- "$AUTO_DEPLOYMENT_HOLD_FILE" ||
+          printf 'Deployment warning: failed to remove the uncommitted automatic deployment hold.\n' >&2
+      fi
+    fi
     if [[ "$VERIFICATION_MARKER_CREATED" == true && -n "$VERIFICATION_MARKER" ]]; then
       rm -f -- "$VERIFICATION_MARKER" ||
         printf 'Deployment warning: failed to remove the unpromoted health verification marker.\n' >&2
@@ -435,6 +643,21 @@ cleanup_deployment() {
   if [[ -n "$PREVIOUS_RELEASE_RESTORE_TMP" && -f "$PREVIOUS_RELEASE_RESTORE_TMP" ]]; then
     rm -f -- "$PREVIOUS_RELEASE_RESTORE_TMP" || true
   fi
+  if [[ -n "$AUTO_HOLD_TMP" && -f "$AUTO_HOLD_TMP" ]]; then
+    rm -f -- "$AUTO_HOLD_TMP" || true
+  fi
+  if [[ -n "$AUTO_HOLD_RESTORE_TMP" && -f "$AUTO_HOLD_RESTORE_TMP" ]]; then
+    rm -f -- "$AUTO_HOLD_RESTORE_TMP" || true
+  fi
+  if [[ -n "$SCHEMA_BASELINE_TMP" && -f "$SCHEMA_BASELINE_TMP" ]]; then
+    rm -f -- "$SCHEMA_BASELINE_TMP" || true
+  fi
+  if [[ -n "$SCHEMA_TRACKING_TMP" && -f "$SCHEMA_TRACKING_TMP" ]]; then
+    rm -f -- "$SCHEMA_TRACKING_TMP" || true
+  fi
+  if [[ -n "$MIGRATION_MARKER_TMP" && -f "$MIGRATION_MARKER_TMP" ]]; then
+    rm -f -- "$MIGRATION_MARKER_TMP" || true
+  fi
   if [[ -n "$VERIFICATION_MARKER_TMP" && -f "$VERIFICATION_MARKER_TMP" ]]; then
     rm -f -- "$VERIFICATION_MARKER_TMP" || true
   fi
@@ -445,6 +668,25 @@ trap cleanup_deployment EXIT
 
 DEPLOYMENT_SHA="$COMMIT_SHA"
 DEPLOYMENT_RELEASE_ID="$RELEASE_ID"
+
+record_successful_migration() {
+  SCHEMA_BASELINE_TMP="$(mktemp "$STATE_DIR/.database-schema-baseline.XXXXXX")"
+  printf '%s\n' "$COMMIT_SHA" > "$SCHEMA_BASELINE_TMP"
+  mv -f "$SCHEMA_BASELINE_TMP" "$SCHEMA_BASELINE_FILE"
+  SCHEMA_BASELINE_TMP=""
+  SCHEMA_BASELINE_SHA="$COMMIT_SHA"
+
+  SCHEMA_TRACKING_TMP="$(mktemp "$STATE_DIR/.database-schema-tracking.XXXXXX")"
+  printf 'version=1\n' > "$SCHEMA_TRACKING_TMP"
+  mv -f "$SCHEMA_TRACKING_TMP" "$SCHEMA_TRACKING_FILE"
+  SCHEMA_TRACKING_TMP=""
+  SCHEMA_TRACKING_ENABLED=true
+
+  rm -f -- "$MIGRATION_IN_PROGRESS_FILE" ||
+    fail "database migration succeeded but its in-progress state could not be cleared; automatic deployment remains blocked."
+  MIGRATION_IN_PROGRESS=false
+}
+
 if [[ -n "$ROLLBACK_SHA" ]]; then
   SOURCE_DIR=""
   DEPLOYMENT_SHA="$ROLLBACK_SHA"
@@ -477,8 +719,8 @@ else
     printf 'BOT_NDI_COMMIT_SHA=%s\n' "$COMMIT_SHA"
   } > "$RELEASE_STAGING/release.env"
   RELEASED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  printf '{"commit":"%s","releaseId":"%s","image":"bot-ndi:%s","createdAt":"%s"}\n' \
-    "$COMMIT_SHA" "$RELEASE_ID" "$RELEASE_ID" "$RELEASED_AT" > "$RELEASE_STAGING/metadata.json"
+  printf '{"commit":"%s","releaseId":"%s","image":"bot-ndi:%s","deploymentMode":"%s","ciRunId":"%s","ciRunAttempt":%s,"ciWorkflowId":%s,"createdAt":"%s"}\n' \
+    "$COMMIT_SHA" "$RELEASE_ID" "$RELEASE_ID" "$DEPLOYMENT_MODE" "$CI_RUN_ID" "$CI_RUN_ATTEMPT" "$CI_WORKFLOW_ID" "$RELEASED_AT" > "$RELEASE_STAGING/metadata.json"
   mv "$RELEASE_STAGING" "$RELEASE_DIR"
   RELEASE_STAGING=""
 
@@ -496,25 +738,42 @@ else
   fi
 fi
 
+check_latest_main_head
+
+if [[ -n "$ROLLBACK_SHA" ]]; then
+  compose_for_release "$APP_DIR/$PRE_DEPLOY_ACTIVE_TARGET"
+  DATABASE_CONTAINER_ID="$(compose ps -q db | head -n 1)"
+  if [[ -z "$DATABASE_CONTAINER_ID" ]]; then
+    fail "manual app rollback requires the existing MySQL container to be available; refusing to recreate it from an older release."
+  fi
+  DATABASE_HEALTH="$(docker inspect --format '{{.State.Health.Status}}' "$DATABASE_CONTAINER_ID" 2>/dev/null || true)"
+  if [[ "$DATABASE_HEALTH" != healthy ]]; then
+    fail "manual app rollback requires a healthy existing MySQL container; refusing to recreate it from an older release."
+  fi
+  compose_for_release "$RELEASE_DIR"
+fi
+
 if [[ "$INITIAL_BOOTSTRAP" == false ]]; then
   if [[ -n "$(compose ps -q app)" ]]; then
+    PREVIOUS_APP_STOP_ATTEMPTED=true
     compose stop app || fail "the previous app service could not be stopped safely."
     PREVIOUS_APP_STOPPED=true
   fi
 fi
 
-compose up -d --wait --wait-timeout 120 db || fail "MySQL did not become healthy."
 if [[ -z "$ROLLBACK_SHA" ]]; then
-  compose run --rm --no-deps app npm run migrate || fail "application migrations failed."
+  MIGRATION_MARKER_TMP="$(mktemp "$STATE_DIR/.database-migration-in-progress.${RUN_ID}.XXXXXX")"
+  printf '%s\n' "$COMMIT_SHA" > "$MIGRATION_MARKER_TMP"
+  mv -f "$MIGRATION_MARKER_TMP" "$MIGRATION_IN_PROGRESS_FILE"
+  MIGRATION_MARKER_TMP=""
+  compose up -d --wait --wait-timeout 120 db || fail "MySQL did not become healthy."
+  if ! compose run --rm --no-deps app npm run migrate; then
+    fail "application migrations failed; the database schema is not automatically rolled back."
+  fi
+  record_successful_migration
 fi
 CANDIDATE_APP_ATTEMPTED=true
 compose up -d --no-deps --wait --wait-timeout 120 app || fail "application container did not become healthy."
-
-HEALTH_RETRIES="${BOT_NDI_HEALTH_RETRIES:-15}"
-HEALTH_RETRY_DELAY="${BOT_NDI_HEALTH_RETRY_DELAY:-2}"
-if [[ ! "$HEALTH_RETRIES" =~ ^[1-9][0-9]*$ || ! "$HEALTH_RETRY_DELAY" =~ ^[0-9]+$ ]]; then
-  fail "health-check retry configuration is invalid."
-fi
 
 check_health() {
   local attempt
@@ -559,6 +818,8 @@ for key in \
   fi
 done
 
+check_latest_main_head
+
 if [[ -z "$ROLLBACK_SHA" ]]; then
   VERIFICATION_MARKER="$RELEASE_DIR/health-verified.json"
   if [[ -e "$VERIFICATION_MARKER" || -L "$VERIFICATION_MARKER" ]]; then
@@ -588,15 +849,13 @@ if [[ -L "$ACTIVE_LINK" ]]; then
   PREVIOUS_TARGET="$(readlink "$ACTIVE_LINK")"
   PREVIOUS_RELEASE_ID="${PREVIOUS_TARGET#releases/}"
   PREVIOUS_SHA="${PREVIOUS_RELEASE_ID:0:40}"
-  if [[ -e "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
-    if [[ ! -f "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
-      fail "previous-release pointer exists but is not a regular file."
+  if [[ "$PREVIOUS_RELEASE_EXISTED" == true ]]; then
+    if [[ ! -f "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ||
+          "$(cat "$PREVIOUS_RELEASE_FILE" 2>/dev/null || true)" != "$PREVIOUS_RELEASE_VALUE" ]]; then
+      fail "previous-release pointer changed during deployment; refusing to promote."
     fi
-    PREVIOUS_RELEASE_EXISTED=true
-    PREVIOUS_RELEASE_VALUE="$(cat "$PREVIOUS_RELEASE_FILE")"
-    if [[ ! "$PREVIOUS_RELEASE_VALUE" =~ ^[a-f0-9]{40}-[1-9][0-9]*-[1-9][0-9]*$ ]]; then
-      fail "previous-release pointer contains an invalid release identity."
-    fi
+  elif [[ -e "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
+    fail "previous-release pointer appeared during deployment; refusing to promote."
   fi
   PREVIOUS_RELEASE_TMP="$(mktemp "$APP_DIR/.previous-release.${COMMIT_SHA}.XXXXXX")"
   printf '%s\n' "$PREVIOUS_RELEASE_ID" > "$PREVIOUS_RELEASE_TMP"
@@ -606,6 +865,14 @@ if [[ -L "$ACTIVE_LINK" ]]; then
 fi
 
 NEXT_ACTIVE_LINK="$APP_DIR/.active-$DEPLOYMENT_RELEASE_ID-$$"
+check_latest_main_head
+if [[ -n "$ROLLBACK_SHA" ]]; then
+  AUTO_HOLD_TMP="$(mktemp "$STATE_DIR/.automatic-deployment-hold.${RUN_ID}.XXXXXX")"
+  printf '%s\n' "$COMMIT_SHA" > "$AUTO_HOLD_TMP"
+  AUTO_HOLD_UPDATE_STARTED=true
+  mv -f "$AUTO_HOLD_TMP" "$AUTO_DEPLOYMENT_HOLD_FILE"
+  AUTO_HOLD_TMP=""
+fi
 ln -s "releases/$DEPLOYMENT_RELEASE_ID" "$NEXT_ACTIVE_LINK"
 if mv --version >/dev/null 2>&1; then
   mv -fT "$NEXT_ACTIVE_LINK" "$ACTIVE_LINK"
@@ -614,10 +881,22 @@ else
 fi
 DEPLOYMENT_PROMOTED=true
 
+if [[ -z "$ROLLBACK_SHA" ]]; then
+  if [[ -e "$AUTO_DEPLOYMENT_HOLD_FILE" || -L "$AUTO_DEPLOYMENT_HOLD_FILE" ]]; then
+    if [[ ! -f "$AUTO_DEPLOYMENT_HOLD_FILE" || -L "$AUTO_DEPLOYMENT_HOLD_FILE" ]]; then
+      fail "release is active but automatic deployment hold state is invalid; operator reconciliation is required."
+    fi
+    rm -f -- "$AUTO_DEPLOYMENT_HOLD_FILE" ||
+      fail "release is active but the previous rollback hold could not be cleared."
+  fi
+fi
+
 if [[ -n "$ROLLBACK_SHA" ]]; then
   printf 'Manual rollback to retained release %s succeeded.\n' "$ROLLBACK_SHA"
+  set_deployment_result "rolled_back"
 else
   printf 'Deployment succeeded for commit %s.\n' "$COMMIT_SHA"
   printf 'Local image bot-ndi:%s (commit %s) is retained for rollback.\n' "$RELEASE_ID" "$COMMIT_SHA"
+  set_deployment_result "deployed"
 fi
 printf 'Scheduler and Learning flags were verified in the running app environment.\n'

@@ -1,6 +1,10 @@
 name: Deploy Bot NDI
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       rollback_sha:
@@ -16,108 +20,85 @@ permissions:
 jobs:
   validate_release:
     name: Validate successful CI on main
+    if: >-
+      github.repository == 'Nusa-Data-Indonesia/bot-ndi' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.status == 'completed' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.repository.full_name == 'Nusa-Data-Indonesia/bot-ndi' &&
+          github.event.workflow_run.head_repository.full_name == 'Nusa-Data-Indonesia/bot-ndi'
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     outputs:
+      deployment_mode: ${{ steps.validate.outputs.deployment_mode }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
+      ci_run_id: ${{ steps.validate.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.validate.outputs.ci_run_attempt }}
+      ci_workflow_id: ${{ steps.validate.outputs.ci_workflow_id }}
     steps:
-      # This GitHub-hosted job verifies the dispatch before the production runner is selected.
-      - name: Validate dispatch and successful CI run
-        id: validate
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+      # Never check out the workflow_run head or use its artifacts. Verify the event
+      # against GitHub's API while this job is still on a GitHub-hosted runner.
+      - name: Checkout trusted deployment verifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          github-token: ${{ github.token }}
-          script: |
-            const expectedRepository = 'Nusa-Data-Indonesia/bot-ndi';
-            const fail = (message) => core.setFailed(message);
-            const { owner, repo } = context.repo;
-
-            if (context.eventName !== 'workflow_dispatch' ||
-                `${owner}/${repo}` !== expectedRepository ||
-                context.ref !== 'refs/heads/main' ||
-                !/^[a-f0-9]{40}$/.test(context.sha)) {
-              fail('Deployment must be dispatched from main in the Bot NDI repository with a full commit SHA.');
-              return;
-            }
-
-            const workflows = await github.rest.actions.listRepoWorkflows({ owner, repo, per_page: 100 });
-            const ciWorkflow = workflows.data.workflows.find((workflow) =>
-              workflow.path === '.github/workflows/ci.yml' && workflow.name === 'CI');
-            if (!ciWorkflow) {
-              fail('The trusted CI workflow file could not be verified.');
-              return;
-            }
-
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id: ciWorkflow.id,
-              branch: 'main',
-              event: 'push',
-              status: 'completed',
-              per_page: 100,
-            });
-            const run = runs.data.workflow_runs.find((candidate) => candidate.head_sha === context.sha);
-            if (!run || run.name !== 'CI' || run.path !== '.github/workflows/ci.yml' ||
-                run.event !== 'push' || run.head_branch !== 'main' ||
-                run.status !== 'completed' || run.conclusion !== 'success' ||
-                run.repository?.full_name !== expectedRepository ||
-                run.head_repository?.full_name !== expectedRepository) {
-              fail('The dispatched main commit does not have a successful trusted CI push run.');
-              return;
-            }
-
-            const verified = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id });
-            if (verified.data.head_sha !== context.sha ||
-                verified.data.path !== '.github/workflows/ci.yml' ||
-                verified.data.event !== 'push' || verified.data.head_branch !== 'main' ||
-                verified.data.conclusion !== 'success' ||
-                verified.data.repository?.full_name !== expectedRepository ||
-                verified.data.head_repository?.full_name !== expectedRepository) {
-              fail('GitHub API metadata does not match the successful CI run.');
-              return;
-            }
-            core.setOutput('commit_sha', context.sha);
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Verify deployment source and latest main head
+        id: validate
+        env:
+          RELEASE_GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-deploy-trigger.js
 
   deploy:
     name: Build and deploy on the Bot NDI LXC
     needs: validate_release
     if: >-
-      github.ref == 'refs/heads/main' &&
-      needs.validate_release.outputs.commit_sha == github.sha
+      needs.validate_release.result == 'success' &&
+      needs.validate_release.outputs.commit_sha != '' &&
+      github.repository == 'Nusa-Data-Indonesia/bot-ndi' &&
+      github.ref == 'refs/heads/main'
     runs-on: [self-hosted, linux, x64, bot-ndi]
     timeout-minutes: 45
     concurrency:
       group: bot-ndi-production
+      queue: max
       cancel-in-progress: false
     environment:
       name: production
     permissions:
       contents: read
     steps:
-      - name: Checkout the validated main commit
+      - name: Checkout the verified release SHA
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.validate_release.outputs.commit_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Node.js for read-only release checks
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
 
       - name: Refuse a stale main revision
         env:
-          RELEASE_COMMIT_SHA: ${{ needs.validate_release.outputs.commit_sha }}
+          COMMIT_SHA: ${{ needs.validate_release.outputs.commit_sha }}
           RELEASE_GITHUB_TOKEN: ${{ github.token }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const { checkReleaseHead } = require(`${process.env.GITHUB_WORKSPACE}/scripts/check-release-head.js`);
-            await checkReleaseHead({
-              repository: `${context.repo.owner}/${context.repo.repo}`,
-              commit: process.env.RELEASE_COMMIT_SHA,
-              token: process.env.RELEASE_GITHUB_TOKEN,
-            });
-            core.info('The dispatched commit remains the current main head.');
+        run: node scripts/check-release-head.js
 
       - name: Validate local deployment toolchain
         run: |
@@ -126,19 +107,31 @@ jobs:
           docker compose version
 
       - name: Build and deploy locally
+        id: deploy_release
         env:
+          BOT_NDI_DEPLOYMENT_MODE: ${{ needs.validate_release.outputs.deployment_mode }}
           BOT_NDI_COMMIT_SHA: ${{ needs.validate_release.outputs.commit_sha }}
+          BOT_NDI_CI_RUN_ID: ${{ needs.validate_release.outputs.ci_run_id }}
+          BOT_NDI_CI_RUN_ATTEMPT: ${{ needs.validate_release.outputs.ci_run_attempt }}
+          BOT_NDI_CI_WORKFLOW_ID: ${{ needs.validate_release.outputs.ci_workflow_id }}
           BOT_NDI_ROLLBACK_SHA: ${{ inputs.rollback_sha }}
+          RELEASE_GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/deploy-homelab.sh
 
-      - name: Record deployed revision
+      - name: Record deployment outcome
         if: success()
         env:
+          DEPLOYMENT_MODE: ${{ needs.validate_release.outputs.deployment_mode }}
+          DEPLOYMENT_RESULT: ${{ steps.deploy_release.outputs.result }}
           DEPLOYED_SHA: ${{ needs.validate_release.outputs.commit_sha }}
           ROLLBACK_SHA: ${{ inputs.rollback_sha }}
         run: |
           if [[ -n "$ROLLBACK_SHA" ]]; then
             printf 'Bot NDI rolled back to: %s\n' "$ROLLBACK_SHA" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$DEPLOYMENT_MODE" == automatic && "$DEPLOYMENT_RESULT" == already_active ]]; then
+            printf 'Verified main commit is already active; no replacement deployment was needed: %s\n' "$DEPLOYED_SHA" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$DEPLOYMENT_MODE" == automatic ]]; then
+            printf 'Bot NDI automatically deployed verified main commit: %s\n' "$DEPLOYED_SHA" >> "$GITHUB_STEP_SUMMARY"
           else
-            printf 'Bot NDI deployed commit: %s\n' "$DEPLOYED_SHA" >> "$GITHUB_STEP_SUMMARY"
+            printf 'Bot NDI manually deployed verified main commit: %s\n' "$DEPLOYED_SHA" >> "$GITHUB_STEP_SUMMARY"
           fi

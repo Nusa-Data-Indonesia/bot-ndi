@@ -60,7 +60,7 @@ CI menjalankan test pada GitHub-hosted runner dengan MySQL service disposable ya
 - Auth dan HTTP: password hashing, login throttling, session, CSRF, same-origin, safe errors, health checks, dan dashboard.
 - Dispatcher dan provider: slot/idempotency, retry, pause/cancel, rekonsiliasi outcome yang tidak diketahui, serta adapter mock Tebar/OpenRouter/Telegram.
 - Database: migrasi, state durable, klaim serentak, notifikasi, webhook deduplication, dan pemulihan setelah koneksi/pool restart.
-- Deployment: manual-only workflow, local image build, runner guardrails, health checks, persistent-volume safety, rollback SHA, dan redeploy dengan commit SHA yang sama.
+- Deployment: verified `workflow_run` deployment, manual dispatch/rollback, local image build, runner guardrails, migration compatibility guard, health checks, persistent-volume safety, and immutable release SHA.
 
 Tes mock tidak memverifikasi permission provider, gateway, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Jalankan validasi provider dan ingress hanya pada environment yang memang disiapkan operator; jangan mengirim post atau notifikasi operasional sebagai bagian dari tes otomatis.
 

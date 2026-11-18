@@ -1,6 +1,6 @@
 # Panduan Deployment Bot NDI
 
-Panduan ini menjelaskan persiapan dan operasi deployment Bot NDI pada satu LXC Proxmox. Perubahan repository menyiapkan Compose, workflow, dan prosedur; langkah di LXC, GitHub, Traefik, serta Cloudflare tetap harus dijalankan dan diverifikasi operator.
+Panduan ini mencakup instalasi dan operasi Bot NDI pada satu LXC Proxmox. Untuk instalasi yang sudah berjalan, langsung ke [Update aplikasi](#7-update-aplikasi).
 
 ## Target dan status verifikasi
 
@@ -17,7 +17,7 @@ Spesifikasi target yang diberikan:
 | Gateway yang sudah ada | LXC `10080`, Traefik dan Cloudflare Tunnel |
 | Repository / domain | `Nusa-Data-Indonesia/bot-ndi` / `https://botndi.sequein.my.id` |
 
-Target di atas belum diverifikasi pada Proxmox atau layanan produksi. ID LXC dan IP aktual tidak ditentukan di repository. Sebelum mengisi `HOST_IP` atau mengubah route Traefik, verifikasi IP LXC dari konfigurasi Proxmox dan dari dalam LXC. Jangan mengubah konfigurasi Proxmox, firewall, `keyctl`, atau gateway sebagai bagian deployment ini. Jika konfigurasi aktual berbeda atau Docker memerlukan perubahan di sisi host, hentikan langkah dan minta persetujuan sebelum mengubahnya.
+Operator melaporkan deployment awal sudah berjalan dengan IP aplikasi `192.168.0.30`, `TRUST_PROXY=192.168.0.80`, runner `ndi-bot-runner`, dan project Compose `bot-ndi`. Operator juga sudah memverifikasi MySQL, login admin, serta endpoint readiness publik. Saat membangun ulang LXC atau mengubah route, cocokkan alamat dengan konfigurasi Proxmox dan interface aktual. Script memeriksa `HOST_IP` dari environment lokal pada setiap deployment.
 
 ## 1. Verifikasi LXC dan alamat IP
 
@@ -190,16 +190,18 @@ Di GitHub repository:
 1. Pastikan runner terdaftar pada repository Bot NDI dan workflow deployment hanya meminta label `self-hosted`, `linux`, `x64`, `bot-ndi`.
 2. Buat GitHub Environment bernama `production`, batasi deployment branch ke `main`, aktifkan required reviewer dan pencegahan self-review bila didukung paket repository.
 3. Jika paket/visibilitas repository tidak mendukung required reviewer atau branch restriction, jangan masukkan secrets produksi dan jangan gunakan runner untuk deployment sampai kontrol yang setara tersedia.
-4. Lindungi branch `main`: wajibkan review, status CI sukses, dan review oleh pemilik untuk `.github/workflows/**`, `scripts/deploy-homelab.sh`, `compose.yaml`, serta file environment/deployment. Batasi siapa yang dapat memicu `workflow_dispatch`.
+4. Lindungi branch `main` dengan review PR dan status CI wajib. Minta review pemilik untuk workflow, skrip verifikasi/deployment, migrasi, Dockerfile, Compose, serta konfigurasi environment. Batasi siapa yang dapat memicu `workflow_dispatch`.
 5. Pastikan CI memakai GitHub-hosted runner; CI untuk pull request tidak pernah memiliki akses ke Docker socket LXC.
 
-Workflow `workflow_dispatch` dapat memilih ref secara manual. Workflow harus menolak ref selain `main`; saat menjalankan deployment pilih `main` dan commit yang telah lulus CI. Jangan menerima workflow dari fork atau pull request pada runner produksi. Setelah langkah ini selesai, periksa halaman GitHub menunjukkan runner online dan Environment memiliki aturan proteksi yang diharapkan.
+Periksa siapa yang dapat menjalankan workflow lain pada runner produksi. Label `bot-ndi` memilih runner, sedangkan pembatasan akses harus diterapkan di GitHub. Jika organisasi menyediakan runner group dengan **Selected workflows**, batasi grup ke repository ini dan ke `Nusa-Data-Indonesia/bot-ndi/.github/workflows/deploy-homelab.yml@refs/heads/main`. Pada runner tingkat repository, tinjau akses penulis workflow dan kebijakan persetujuan workflow dari fork sebelum mengizinkan kontribusi yang tidak tepercaya. [Panduan akses runner GitHub](https://docs.github.com/en/enterprise-cloud%40latest/actions/how-tos/manage-runners/self-hosted-runners/manage-access)
+
+Pastikan runner online dan Environment `production` membatasi branch ke `main`. Jika Environment mensyaratkan reviewer, job otomatis juga menunggu persetujuan. Pemicu otomatis menghapus kebutuhan menekan **Run workflow** setiap kali PR digabung.
 
 ## 5. Fresh MySQL dan deployment pertama
 
 MySQL memakai database baru `bot_ndi`, user aplikasi `bot_ndi_app`, dan volume khusus `bot-ndi_mysql_data`. Service database tidak memetakan port 3306 ke host/LAN; hanya service `app` yang terhubung ke network internal database. Saat volume baru kosong, image MySQL menginisialisasi database dan user dari environment lokal. Nilai inisialisasi itu tidak merotasi credential pada volume yang sudah berisi data.
 
-Deployment pertama:
+Untuk instalasi baru, gunakan deployment manual berikut. Update otomatis membutuhkan release aktif yang sudah lulus pemeriksaan kesehatan.
 
 1. Pastikan runner dan Environment `production` siap, `.env` mode `600`, `HOST_IP` aktual, dan dua password database baru terisi.
 2. Pastikan commit `main` yang akan dideploy telah lulus CI. Periksa perubahan workflow dan script telah direview.
@@ -260,17 +262,22 @@ Hasil siap adalah status HTTP sukses dengan body ringkas `{"status":"ready"}`. U
 
 ## 7. Update aplikasi
 
-Setiap update dimulai dari pull request yang direview dan CI sukses pada GitHub-hosted runner. Untuk saat ini, deployment hanya manual:
+### Setelah merge ke `main`
 
-1. Merge perubahan yang telah disetujui ke `main`.
-2. Buka **Actions → deployment workflow → Run workflow**, pilih `main` dan commit yang lulus CI.
-3. Lalui approval Environment `production`.
-4. Pantau summary workflow, SHA image, migration, readiness, dan hasil promotion release.
-5. Verifikasi `/health/ready` melalui LXC dan domain publik.
+1. Push hasil merge menjalankan **CI**. Saat CI selesai, event `workflow_run` diterima oleh **Deploy Bot NDI**. Hanya push yang sukses pada `main` di `Nusa-Data-Indonesia/bot-ndi` yang memenuhi syarat deployment.
+2. Job pada runner GitHub mencocokkan run dan workflow CI dengan GitHub API. Pemeriksaan meliputi repository asal, event, branch, hasil, path `.github/workflows/ci.yml`, dan SHA lengkap. SHA release diambil dari run CI terverifikasi dan harus sama dengan HEAD `main` saat itu. CI pull request, fork, gagal, dibatalkan, atau dilewati tidak diteruskan ke LXC.
+3. GitHub menerapkan aturan Environment `production`. Runner LXC melakukan checkout SHA yang lolos pemeriksaan. Build menggunakan source Git tersebut dan Docker Engine lokal, tanpa artifact PR atau image aplikasi dari registry. Deployment otomatis dan manual memakai grup concurrency `bot-ndi-production` yang sama.
+4. Script memeriksa kembali HEAD `main` selama update otomatis. Jika commit baru masuk saat job menunggu atau saat build, pantau CI milik commit terbaru. Setelah promosi berhasil, cocokkan SHA di ringkasan Actions dengan release aktif dan periksa `/health/ready`.
 
-Workflow memiliki concurrency control agar dua release tidak berjalan bersamaan. Runner melakukan checkout di workspace sementara yang terpisah dari `/opt/bot-ndi`, memvalidasi environment produksi, lalu membangun image dari source pada LXC. Tag image menggabungkan full commit SHA dengan GitHub run ID dan attempt agar redeploy commit yang sama tetap mendapat image immutable tersendiri; label image dan metadata tetap mencatat full commit SHA. Log hanya mencatat hasil aman dan identitas commit; jangan menambahkan `cat .env`, `env`, atau Compose config yang menampilkan nilai ter-resolve.
+Deploy membaca pengaturan scheduler dan integrasi dari `/opt/bot-ndi/.env`. Jangan menampilkan isi file itu atau konfigurasi Compose yang memuat nilai kredensial di log.
 
-Auto-deploy dari `main` tetap nonaktif. Aktifkan hanya setelah deployment pertama diverifikasi dan owner menyetujui perubahan kebijakan secara terpisah.
+### Jika migrasi berubah atau perlu deploy manual
+
+Sebelum menghentikan aplikasi atau menjalankan migrasi, mode otomatis membandingkan kandidat dengan baseline schema terakhir yang tercatat di `/opt/bot-ndi/state/database-schema-baseline`. Pada rollout pertama guard ini, baseline awal berasal dari release aktif yang health-verified. Perubahan pada `migrations/`, `src/migrate.js`, `src/cli.js`, `src/db.js`, `src/config.js`, `package.json`, `package-lock.json`, `Dockerfile`, `compose.yaml`, `.dockerignore`, `Dockerfile.dockerignore`, atau `.gitattributes` memerlukan deployment manual. Berkas tersebut menentukan SQL, koneksi database, entrypoint, dependensi, dan file yang masuk ke image.
+
+Sebelum migrasi berjalan, script mencatat SHA kandidat pada `/opt/bot-ndi/state/database-migration-in-progress`. Jika perintah migrasi berhasil, baseline schema dan marker tracking disimpan segera setelahnya, terpisah dari health check aplikasi dan promosi pointer. Jika migrasi gagal atau status penyimpanan tidak dapat dipastikan, marker in-progress tetap ada dan auto-deployment berhenti sampai operator merekonsiliasi schema. Setelah tracking digunakan, baseline yang hilang juga memerlukan rekonsiliasi operator; instalasi lama tanpa marker tracking boleh menginisialisasi baseline pertama dari release aktif yang health-verified. Manual rollback aplikasi tidak mengubah baseline atau menghapus marker migrasi yang belum selesai.
+
+Untuk perubahan migrasi, tinjau dampak pada data dan kompatibilitas image sebelumnya, termasuk jika DDL hanya berhasil sebagian. Uji upgrade pada MySQL disposable dan siapkan backup yang dapat dipulihkan sesuai [prosedur backup operator](#9-backup-dan-restore-database). Setelah hasil review dan rencana pemulihan disetujui, jalankan **Actions → Deploy Bot NDI → Run workflow** dari `main` dengan `rollback_sha` kosong. Jalur manual juga memverifikasi CI push yang sukses untuk HEAD terbaru. Gunakan cara ini pula jika perlu membangun ulang commit aktif. Jika riwayat/baseline Git tidak dapat diverifikasi, hentikan auto-deployment dan lakukan rekonsiliasi operator.
 
 ## 8. Health check, log, dan rollback
 
@@ -287,7 +294,7 @@ docker compose \
   --file /opt/bot-ndi/active/compose.yaml ps
 ```
 
-Jika deployment gagal sebelum release baru sehat, workflow/script harus mempertahankan release aktif sebelumnya, menjaga image lama, dan mencoba rollback aplikasi ke image lokal sebelumnya yang masih terverifikasi. Periksa hasil rollback dan health endpoint sebelum membuka kembali trafik. Jika rollback tidak sehat atau migrasi mengubah schema secara tidak kompatibel, hentikan perubahan berikutnya dan lakukan pemulihan database terencana; image lama tidak membatalkan migrasi.
+Jika migrasi gagal, deployment berhenti. Jika aplikasi sudah dihentikan atau kandidat gagal dalam pemeriksaan kesehatan, script mencoba menjalankan kembali image terverifikasi sebelumnya. Periksa hasil recovery dan `/health/ready`. Rollback hanya memulihkan aplikasi. DDL MySQL yang sudah diterapkan dapat tetap tersimpan meskipun migrasi gagal. Jika schema sudah berubah, periksa riwayat migrasi dan kompatibilitas image lama sebelum mencoba lagi. Pemulihan database menggunakan backup yang dikelola operator.
 
 Jika release baru sudah berhasil dipromosikan tetapi kemudian perlu dikembalikan, `previous-release` berisi release ID unik. Baca commit SHA pada metadata release tersebut, lalu gunakan SHA itu untuk input `rollback_sha` pada `workflow_dispatch`:
 
@@ -296,7 +303,7 @@ PREVIOUS_RELEASE_ID="$(cat /opt/bot-ndi/previous-release)"
 jq -r .commit "/opt/bot-ndi/releases/$PREVIOUS_RELEASE_ID/metadata.json"
 ```
 
-Pilih branch `main`, masukkan SHA 40 karakter tersebut pada `rollback_sha`, lalu setujui GitHub Environment `production`. Workflow mencocokkan SHA dengan metadata release sebelumnya, lalu memverifikasi release ID dan image lokal `bot-ndi:<release-id>`; ia tidak membangun ulang atau mengunduh image saat rollback. Ini juga membedakan dua deployment dari commit yang sama. Rollback hanya dipromosikan setelah health check lulus. Jika release/image tidak tersedia atau pemeriksaan gagal, hentikan recovery dan investigasi. Untuk deployment normal, biarkan `rollback_sha` kosong; preflight workflow memverifikasi CI sukses untuk SHA yang hendak dideploy.
+Pilih branch `main`, masukkan SHA 40 karakter tersebut pada `rollback_sha`, dan ikuti aturan Environment `production`. Preflight memverifikasi CI push untuk HEAD `main` yang menjalankan prosedur rollback. Di LXC, script mencocokkan SHA target dengan metadata release sebelumnya, memeriksa health marker dan label image lokal `bot-ndi:<release-id>`, lalu memakai kembali image tersebut. Langkah ini membedakan dua build dari commit yang sama. Sebelum menghentikan aplikasi, rollback memeriksa health container MySQL aktif memakai konfigurasi release aktif dan tidak menjalankan `compose up db` dari konfigurasi release lama. Rollback hanya mempromosikan aplikasi setelah health check lulus dan tidak mengubah schema database. SHA `main` yang mengendalikan rollback disimpan pada `/opt/bot-ndi/state/automatic-deployment-hold`; auto-deployment untuk SHA tersebut diblokir agar tidak langsung membatalkan rollback. Operator dapat redeploy melalui `workflow_dispatch` atau menunggu commit `main` baru. Jika release atau image tidak tersedia, periksa penyebabnya sebelum mencoba lagi.
 
 Jangan mengubah symlink `active` atau menjalankan migrasi downgrade secara manual. Jangan menghapus image sebelumnya sampai release baru healthy dan operator memutuskan retensi dengan melihat backup serta metadata migrasi. Database selalu berada di volume persistent yang sama selama update aplikasi.
 
@@ -436,6 +443,7 @@ Untuk menghapus image lama secara manual, cocokkan setiap release ID dengan `act
 - [ ] `.env` baru berada di `/opt/bot-ndi/.env`, mode `600`, dan tidak mengandung kredensial aplikasi lain.
 - [ ] Database baru memakai `bot_ndi`, `bot_ndi_app`, volume `bot-ndi_mysql_data`; port 3306 tidak dipublikasikan.
 - [ ] Deployment manual `workflow_dispatch` dari `main` lulus health check dan rollback teruji sesuai kebijakan operator.
+- [ ] Setelah merge yang disetujui, CI push pada HEAD `main` memicu deployment otomatis dan SHA release sehat sesuai ringkasan Actions.
 - [ ] Traefik/Tunnel existing mengarahkan domain ke IP internal yang benar dan public health check sukses.
 - [ ] Admin baru dapat login melalui HTTPS; scheduler, Threads, Telegram, dan AI tetap mati sampai aktivasi terpisah.
 - [ ] Bahasa konten, brand/fakta, klaim, dan CTA telah ditinjau khusus untuk NDI sebelum publikasi diaktifkan.
