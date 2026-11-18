@@ -2,7 +2,7 @@
 
 Sumber utama: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris, dibaca ulang lengkap pada 2026-11-18. Requirement R-001–R-073 tetap tercatat satu per satu; test matrix T-01–T-30 dipetakan di bawah.
 
-Cakupan: Fase A berada pada PR #3; Fase B ada di branch ini; Fase C belum diimplementasikan dan menunggu branch/PR bertingkat berikutnya. Status memakai nilai SSOT `DONE`, `IN_PROGRESS`, `TODO`, atau `BLOCKED`; R-055/R-068 adalah gate operator produksi. Browser E2E T-22 PASS; T-30 BLOCKED hanya menunggu CI Phase B yang belum dipicu sebelum PR.
+Cakupan: Fase A berada pada PR #3; Fase B pada PR #4; Fase C pada PR #5 bertingkat di atas B. Status memakai nilai SSOT `DONE`, `IN_PROGRESS`, `TODO`, atau `BLOCKED`; R-055/R-068 adalah gate operator produksi. Browser E2E T-22 PASS. T-30 BLOCKED karena final head B/C tidak memiliki GitHub checks; workflow hanya menargetkan `main`, sementara perubahan trigger memerlukan approval SSOT.
 
 | ID | Ringkasan requirement | Implementasi/evidence as-built | Target file/modul | Fase | Status | Tes otomatis yang dipetakan | Bukti verifikasi |
 |---|---|---|---|---|---|---|---|
@@ -113,7 +113,7 @@ Cakupan: Fase A berada pada PR #3; Fase B ada di branch ini; Fase C belum diimpl
 | T-27 | R-062 | C | NOT_YET_IMPLEMENTED | Website fetch/parse failure-preservation test is not present on branch B; run after Phase C implementation. |
 | T-28 | R-037, R-058 | C | NOT_YET_IMPLEMENTED | Fixed website origin and CTA independence tests are not present on branch B; run after Phase C implementation. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B | BLOCKED | Compose validation, lint/typecheck/check, MySQL migration tests, deployment shell suite, and local Docker build PASS. GitHub CI for Phase B has not run until PR creation; `actionlint` is unavailable. Phase-A PR #3 run `44277798887` is not evidence for this branch. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A/B | BLOCKED | Compose validation, lint/typecheck/check, MySQL migration tests, deployment shell suite, and local Docker build PASS. Final B/C heads have no GitHub checks because workflow triggers target `main` only. Experimental runs `44310912797` (B: 492 pass, 1 fail, 7 skipped) and `44310952126` (C: 502 pass, 1 fail, 7 skipped) failed only at `test/workflow-deployment.test.js` assertion requiring `push: [main]`; the temporary workflow edit was reverted under the SSOT approval gate. `actionlint` unavailable; Phase-A run `44277798887` is not evidence for these final heads. |
 
 ## Hasil verifikasi aktual
 
@@ -124,18 +124,18 @@ Branch B-only diverifikasi setelah fitur C dikeluarkan; hasil yang tercatat bera
 - Migration 021–022 disposable MySQL: **1/1 passed**; publication-resolution MySQL: **10/10 passed**.
 - Browser E2E: **3/3 passed** dengan disposable MySQL dan Chromium; scheduler/provider integrations tetap OFF.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose validation, dan Docker build: **PASS**.
-- CI Phase B belum berjalan sebelum PR dibuat; actionlint tidak tersedia. Tidak menjalankan provider nyata, posting Threads, scheduler produksi, migrasi produksi, merge, deployment, atau penghapusan volume Docker.
+- CI percobaan Phase B gagal pada assertion lama yang mensyaratkan push hanya ke `main`; edit trigger sementara dikembalikan sesuai SSOT. Final head B tidak memiliki check run; `actionlint` tidak tersedia. Tidak menjalankan provider nyata, posting Threads, scheduler produksi, migrasi produksi, merge, deployment, atau penghapusan volume Docker.
 
 ## Coverage dan gate tersisa
 
 - Requirement IDs pada branch B: **63 DONE**, **1 IN_PROGRESS** (R-071 menunggu bagian route C), **7 TODO** (R-057–R-063, Fase C), dan **2 BLOCKED** (R-055/R-068 operator produksi).
-- T-23–T-28 belum diimplementasikan pada branch B. T-22 PASS; T-30 tetap BLOCKED hanya karena CI Phase B belum berjalan.
+- T-23–T-28 tersedia di PR #5, bukan branch B. T-22 PASS; T-30 BLOCKED sampai ada persetujuan untuk menjalankan CI pada branch stacked dan check final head tersedia.
 - Tidak ada provider Threads nyata, scheduler produksi, migrasi produksi, merge, deployment, atau penghapusan volume Docker.
 
 ## Change-group checkpoints
 
 - Baseline A: `codex/ndi-phase-a` / PR #3, GitHub CI run `44277798887` PASS; ini bukan hasil Phase B/C.
 - Phase B menggunakan migration 022 dan harus menjadi PR terpisah yang menarget branch A.
-- Phase C belum diimplementasikan. Migration 023 dan website-sync runtime harus ditambahkan hanya pada branch Phase C yang bertumpu di atas Phase B.
+- Phase C berada pada PR #5 di atas branch B. Migration 023 dan website-sync runtime ada hanya dalam diff PR C.
 - Rotasi kategori bergantung pada timestamp provider `published_at`; jika data provider tidak tersedia atau ambigu, sistem tetap fail closed.
 - Detail CI yang belum berjalan serta gate operator produksi tercatat di `docs/ndi-progress-checkpoint.md` dan `docs/ndi-codebase-audit.md`.

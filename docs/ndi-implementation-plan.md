@@ -33,7 +33,7 @@ Requirement R-057–R-063 dan T-23–T-28 tetap TODO/not yet implemented pada tr
 
 ## Verifikasi branch B
 
-`npm test`: 475 total, 450 passed, 0 failed, 25 skipped. `npm run test:integration`: 94/94, MySQL configuration 1/1; migration 021–022: 1/1 dan publication-resolution MySQL: 10/10 pada database disposable. Browser E2E: 3/3. Lint, typecheck, syntax check, Compose validation, dan Docker build PASS. GitHub CI menunggu PR; `actionlint` tidak tersedia.
+`npm test`: 475 total, 450 passed, 0 failed, 25 skipped. `npm run test:integration`: 94/94, MySQL configuration 1/1; migration 021–022: 1/1 dan publication-resolution MySQL: 10/10 pada database disposable. Browser E2E: 3/3. Lint, typecheck, syntax check, Compose validation, dan Docker build PASS. PR #4 terbuka. GitHub run `44310912797` pada temporary trigger commit gagal 1 assertion `test/workflow-deployment.test.js` (492 pass, 1 fail, 7 skipped); trigger dikembalikan mengikuti gate approval SSOT. Final head B tidak memiliki GitHub checks; `actionlint` tidak tersedia.
 
 - Tidak menjalankan provider nyata, posting Threads, scheduler produksi, migrasi produksi, merge, deployment, atau menghapus volume Docker.
 - R-055 dan R-068 tetap BLOCKED untuk review nilai database produksi dan prosedur backup/restore/rollback oleh operator.
@@ -45,5 +45,5 @@ Migration 022 hanya menambah tabel/kolom/indeks dan default; tidak ada `DROP`, `
 
 ## GO / NO-GO
 
-- **GO untuk review PR Phase B** setelah branch diuji dan PR dibuat ke branch A.
-- **NO-GO merge/deployment** sampai CI B berjalan dan gate operator R-055/R-068 ditinjau. Merge ke `main` dapat memicu auto-deployment dan dilarang tanpa persetujuan eksplisit.
+- **GO untuk review PR Phase B** (#4) dan Phase C (#5) bertingkat.
+- **NO-GO merge/deployment** sampai checks final head tersedia dan gate operator R-055/R-068 ditinjau. Merge ke `main` dapat memicu auto-deployment dan dilarang tanpa persetujuan eksplisit.

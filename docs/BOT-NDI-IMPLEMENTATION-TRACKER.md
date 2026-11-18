@@ -2,7 +2,7 @@
 
 Sumber requirement: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` (R-001–R-073). Status mengikuti bukti source dan tes untuk branch Phase B-only. `VERIFIED` berarti implementasi dan tes lokal yang disebut tersedia; `BLOCKED` berarti ada gate bukti/operasional yang masih harus diselesaikan.
 
-Ringkasan Phase B: **63 VERIFIED**, **1 IN_PROGRESS** (R-071, menunggu kontrol Fase C), **7 NOT_STARTED** (R-057–R-063), dan **2 BLOCKED** (R-055/R-068, gate operator produksi).
+Ringkasan Phase B: **63 VERIFIED**, **1 IN_PROGRESS** (R-071, menunggu kontrol Fase C), **7 NOT_STARTED** (R-057–R-063), dan **2 BLOCKED** (R-055/R-068, gate operator produksi). T-30 BLOCKED karena final head B/C tidak memiliki GitHub checks; workflow update memerlukan persetujuan sesuai SSOT.
 
 | ID | Requirement | Phase | Status | File implementasi / target | Test IDs | Bukti / batas | Dependencies | Risk / guardrail |
 |---|---|---|---|---|---|---|---|---|

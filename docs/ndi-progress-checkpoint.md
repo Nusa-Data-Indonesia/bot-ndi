@@ -3,8 +3,9 @@
 Diperbarui: 2026-11-18
 Branch implementasi: `codex/ndi-phase-b`, bertumpu di atas baseline Phase A.
 PR Phase A: #3 terbuka, belum merge.
-PR Phase B: akan dibuat setelah pemisahan B-only dan verifikasi.
-Phase C: belum diimplementasikan; cabang berikutnya akan bertumpu di atas B.
+PR Phase B: #4 terbuka, target `codex/ndi-phase-a`.
+PR Phase C: #5 terbuka, target `codex/ndi-phase-b`.
+GitHub CI: final head B/C tidak memiliki checks karena workflow hanya memicu pull_request/push ke `main`. Runs percobaan `44310912797`/`44310952126` dijalankan dari temporary CI trigger dan gagal hanya pada assertion yang mensyaratkan filter `push: [main]`; trigger sementara dikembalikan mengikuti gate persetujuan SSOT. T-30 BLOCKED sampai branch CI dapat dijalankan dengan persetujuan.
 
 ## Otorisasi dan batas keselamatan
 
@@ -18,7 +19,7 @@ Phase C: belum diimplementasikan; cabang berikutnya akan bertumpu di atas B.
 - SSOT `docs/BOT-NDI-MASTER-CODEX-PROMPT.md` berisi 377 baris. Pembacaan lengkap dan self-audit dilacak berdasarkan rentang 1–130, 131–260, dan 261–377.
 - `docs/ndi-requirements-traceability.md` memetakan seluruh R-001–R-073 dan T-01–T-30; `docs/BOT-NDI-IMPLEMENTATION-TRACKER.md` memuat seluruh 73 Requirement ID dan bukti status branch B.
 - Audit runtime, generator, config/knowledge, API/dashboard, scheduler/providers/retry/unknown, auth/session/audit, migrasi, Compose, CI/deployment/rollback tersedia di `docs/ndi-codebase-audit.md`.
-- PR #3 Phase A adalah baseline; GitHub Actions run `44277798887` lulus. Hasil itu bukan bukti CI Phase B.
+- PR #3 Phase A adalah baseline; GitHub Actions run `44277798887` lulus. Hasil itu bukan bukti CI Phase B/C.
 - R-055 tetap BLOCKED untuk pemeriksaan nilai database produksi efektif; R-068 BLOCKED untuk persetujuan operator atas backup/restore dan rollback schema produksi. Produksi tidak diakses.
 
 ## Phase A
@@ -44,11 +45,10 @@ R-057–R-063 dan T-23–T-28 tetap TODO/not yet implemented pada branch ini. We
 - Migration 021–022 disposable MySQL **1/1 PASS**; publication-resolution MySQL **10/10 PASS**.
 - Browser E2E **3/3 PASS** pada Chromium lokal dan MySQL disposable; scheduler/provider integrations tetap OFF.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose validation, dan Docker build **PASS**.
-- GitHub CI Phase B belum berjalan karena PR belum dibuat; `actionlint` tidak tersedia. T-30 tetap **BLOCKED** sampai CI hasil tersedia.
+- GitHub Actions runs `44310912797` (B: 492 pass/1 fail/7 skipped) dan `44310952126` (C: 502 pass/1 fail/7 skipped) gagal pada assertion workflow `test/workflow-deployment.test.js`; trigger sementara penyebab run sudah dikembalikan. Final heads tidak mendapat CI run karena filter workflow hanya mencakup `main`. `actionlint` tidak tersedia; T-30 **BLOCKED**.
 
 ## Berikutnya
 
-1. Commit dan push B-only; verifikasi workflow CI setelah PR dibuat.
-2. Buat PR B target branch `codex/ndi-phase-a`, tanpa merge.
-3. Buat branch C dari B; overlay fitur website sync dan migration 023, verifikasi B+C, lalu buat PR C target branch B, tanpa merge.
-4. Reread seluruh SSOT dan audit requirement awal/tengah/akhir pada branch final. Laporkan status PR, risiko kompatibilitas, serta readiness merge/deploy sebagai NO-GO tanpa persetujuan.
+1. Review PR bertingkat #4 (B) dan #5 (C); jangan merge.
+2. T-30 memerlukan persetujuan eksplisit sebelum workflow CI diubah agar memicu push branch B/C.
+3. R-055 dan R-068 tetap memerlukan pemeriksaan operator produksi; tidak ada akses atau migration produksi.
