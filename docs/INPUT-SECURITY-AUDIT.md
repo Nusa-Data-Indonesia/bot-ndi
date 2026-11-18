@@ -1,6 +1,6 @@
 # [Historical] Audit Keamanan Input BotMerzz
 
-> Audit ini mendahului isolasi aplikasi menjadi Bot NDI. Contoh domain, keputusan, dan hasil uji di dalamnya adalah historis; jangan gunakan sebagai konfigurasi aktif. Policy Bot NDI saat ini menggunakan `APPROVED_CTA_HOSTS` yang harus disetujui operator. Lihat [Panduan Deployment](DEPLOYMENT.md) dan [laporan readiness](PRE-DEPLOYMENT-READINESS.md).
+> Audit ini mendahului isolasi aplikasi menjadi Bot NDI. Contoh domain, keputusan, dan hasil uji di dalamnya adalah historis; jangan gunakan sebagai konfigurasi aktif. Kebijakan CTA dan status deployment terbaru dicatat dalam [audit codebase Fase A](ndi-codebase-audit.md) dan [rencana implementasi](ndi-implementation-plan.md).
 
 Tanggal audit awal: 8 November 2026
 

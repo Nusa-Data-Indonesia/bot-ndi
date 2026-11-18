@@ -2,6 +2,8 @@
 
 Tanggal audit: 18 November 2026 (Asia/Jakarta)
 
+> **Snapshot historis, bukan status terkini.** Laporan ini mencatat keadaan sebelum migrasi konten NDI Fase A dan migration 021. Jumlah migrasi/pengujian, konfigurasi CTA, serta pernyataan deployment manual-only di bawah tidak berlaku sebagai bukti untuk branch Fase A. `origin/main` sekarang memiliki deploy otomatis setelah CI push ke `main` sukses, dengan guard yang menahan perubahan migration/startup surface. Gunakan [audit codebase Fase A](ndi-codebase-audit.md), [checkpoint](ndi-progress-checkpoint.md), dan [rencana implementasi](ndi-implementation-plan.md) untuk status terkini.
+
 Keputusan: **NO-GO untuk initial deployment sampai operator menyiapkan dan memverifikasi infrastruktur LXC, runner, dan ingress.** Perbaikan serta verifikasi lokal yang dapat dilakukan sudah selesai. Tidak ada Git push, deployment Proxmox, perubahan Cloudflare, atau aktivasi Threads.
 
 ## Ringkasan status

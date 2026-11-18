@@ -1,6 +1,6 @@
 # [Historical] Rencana Remediasi Audit UI/UX dan Keamanan Input
 
-> Dokumen ini mencatat remediasi aplikasi dan konfigurasi Kedai Merzz sebelum workspace diisolasi menjadi Bot NDI. Referensi hostname, brand, dan hasil verifikasinya bukan konfigurasi aktif atau bukti readiness Bot NDI. Gunakan [Panduan Deployment Bot NDI](DEPLOYMENT.md) dan [Laporan Pre-Deployment](PRE-DEPLOYMENT-READINESS.md) untuk keadaan saat ini.
+> Dokumen ini mencatat remediasi aplikasi dan konfigurasi Kedai Merzz sebelum workspace diisolasi menjadi Bot NDI. Referensi hostname, brand, dan hasil verifikasinya bukan konfigurasi aktif atau bukti readiness Bot NDI. Gunakan [audit codebase Fase A](ndi-codebase-audit.md) dan [rencana implementasi](ndi-implementation-plan.md) untuk status terkini.
 
 Tanggal audit awal: 8 November 2026
 

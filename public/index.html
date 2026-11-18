@@ -45,7 +45,7 @@
       <div class="dashboard-layout">
         <aside id="dashboard-sidebar" class="sidebar" role="complementary" aria-label="Navigasi utama" aria-hidden="true" inert>
           <div class="sidebar-heading">
-            <div class="brand-mark small">KM</div>
+            <div class="brand-mark small">NDI</div>
             <div class="sidebar-brand"><strong>Bot NDI</strong><span>Panel Threads</span></div>
             <button id="sidebar-close" class="sidebar-close" type="button" aria-label="Tutup navigasi">×</button>
           </div>
@@ -53,12 +53,11 @@
           <nav class="sidebar-nav" role="tablist" aria-orientation="vertical" aria-labelledby="sidebar-title">
             <button class="tab active" id="tab-button-dashboard" data-tab="dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM13 3h8v6h-8zM3 17h8v4H3z"/></svg><span>Dashboard</span></button>
             <button class="tab" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>Konten &amp; brand</span></button>
-            <button class="tab" id="tab-button-templates" data-tab="templates" role="tab" aria-controls="tab-templates" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h5M9 12h7M9 16h7"/></svg><span>Template</span></button>
+            <button class="tab" id="tab-button-strategy" data-tab="strategy" role="tab" aria-controls="tab-strategy" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="19" r="2"/></svg><span>Strategi konten</span></button>
             <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Jadwal</span></button>
-            <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg><span>Produk &amp; informasi</span></button>
+            <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg><span>Layanan NDI</span></button>
             <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="7" cy="5" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="19" r="1"/></svg><span>Riwayat &amp; catatan</span></button>
             <button class="tab" id="tab-button-ai" data-tab="ai" role="tab" aria-controls="tab-ai" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v3M5.6 5.6l2.1 2.1M3 12h3M5.6 18.4l2.1-2.1M12 18v3M18.4 18.4l-2.1-2.1M18 12h3M18.4 5.6l-2.1 2.1"/><circle cx="12" cy="12" r="5"/></svg><span>AI</span></button>
-            <button class="tab" id="tab-button-learning" data-tab="learning" role="tab" aria-controls="tab-learning" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h7a3 3 0 0 1 3 3v11a3 3 0 0 0-3-3H4zM20 5h-3a3 3 0 0 0-3 3v11a3 3 0 0 1 3-3h3z"/></svg><span>AI Learning</span></button>
             <button class="tab" id="tab-button-integrations" data-tab="integrations" role="tab" aria-controls="tab-integrations" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M8 4v5M16 4v5M6 9h12v4a6 6 0 0 1-6 6v2M6 13a6 6 0 0 0 6 6"/></svg><span>Integrasi</span></button>
             <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span>Admin</span></button>
           </nav>
@@ -86,7 +85,7 @@
         <article class="metric"><span>Posting berhasil</span><strong id="metric-success">0</strong><small>30 hari terakhir</small></article>
         <article class="metric"><span>Klik Threads</span><strong id="metric-clicks">Belum tersedia</strong><small>30 hari terakhir · metrik akun Tebar</small></article>
         <article class="metric"><span>Perlu perhatian</span><strong id="metric-failed">0</strong><small>Gagal atau status belum pasti</small></article>
-        <article class="metric"><span>Fakta terbaru</span><strong id="metric-facts">0 / 2</strong><small>Harga / stok berlaku 24 jam</small></article>
+        <article class="metric"><span>Layanan NDI</span><strong id="metric-services">0</strong><small>Dalam sumber pengetahuan bisnis</small></article>
       </section>
 
       <section class="panel onboarding-panel">
@@ -106,44 +105,61 @@
 
       <section id="tab-content" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-content" aria-hidden="true" tabindex="0" hidden>
         <form id="content-form" class="panel form-grid">
-          <div class="panel-heading full"><div><p class="eyebrow">PANDUAN TERSTRUKTUR</p><h2>Karakter brand dan batasan AI</h2><p class="muted">AI hanya menggunakan panduan dan daftar yang disimpan di sini.</p></div></div>
-          <label>Nama merek<input name="brandName" maxlength="120" placeholder="Nama brand NDI"></label>
-          <label>Gaya komunikasi<input name="voice" maxlength="500" placeholder="Ramah, santai gamer, informatif"></label>
-          <label class="full">
-            Arahan konten AI
-            <span class="field-hint">Acuan utama untuk topik, sudut, dan gaya konten. Maksimal 7.000 karakter; arahan ini tidak dapat mengubah batas fakta dan klaim.</span>
-            <textarea name="contentDirection" rows="5" maxlength="7000" placeholder="Contoh: Utamakan pertanyaan santai yang mengajak pemain berbagi pengalaman bermain bersama teman. Hindari gaya penjualan yang mendesak."></textarea>
-          </label>
-          <label class="full">
-            Kosakata hook yang disarankan
-            <span class="field-hint">Opsional; maksimal 300 kata atau frasa, satu per baris. Batas kolom 7.000 karakter. Ini hanya panduan, bukan daftar wajib; AI dapat menggunakan istilah lain yang aman.</span>
-            <textarea name="hookVocabulary" rows="3" maxlength="7000" placeholder="Contoh: cerita pengalaman&#10;obrolan santai&#10;kenangan bermain"></textarea>
-          </label>
-          <label class="full">
-            Wawasan pelanggan
-            <textarea name="audienceNotes" rows="4" maxlength="7000" placeholder="Pertanyaan, kekhawatiran, dan hal yang dihargai pelanggan Indonesia…"></textarea>
-          </label>
-          <label class="full">Game top-up yang disetujui <span class="field-hint">Satu nama per baris</span><textarea name="gameWhitelist" rows="4" maxlength="3000" placeholder="Mobile Legends"></textarea></label>
-          <label class="full">Hashtag otomatis <span class="field-hint">Satu hashtag per baris; awalan # dan spasi akan dinormalisasi. Hashtag yang sudah ada di konten tidak ditambahkan lagi.</span><textarea name="hashtags" rows="3" maxlength="6500" placeholder="#NamaBrand&#10;#TopikRelevan"></textarea></label>
-          <label>Tautan top-up berpelacak<input name="trackedTopup" type="url" inputmode="url" maxlength="300" placeholder="https://example.com/?utm_source=threads&amp;utm_campaign=topup"></label>
-          <label>Tautan jual akun berpelacak<input name="trackedAccount" type="url" inputmode="url" maxlength="300" placeholder="https://example.com/?utm_source=threads&amp;utm_campaign=account"></label>
-          <label class="full">Klaim yang dilarang <span class="field-hint">Satu frasa per baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% aman"></textarea></label>
-          <label class="full">
-            Klaim yang disetujui
-            <span class="field-hint">Satu frasa per baris; klaim harus didukung informasi yang benar</span>
-            <textarea name="approvedClaims" rows="3" maxlength="7000"></textarea>
-          </label>
-          <label class="check-row full"><input name="guardrailsApproved" type="checkbox"><span>Batasan AI ini sudah ditinjau dan disetujui klien</span></label>
-          <div class="form-footer full"><span class="muted">Jangan masukkan kata sandi, token, atau data pelanggan di sini.</span><div class="form-actions"><button class="button quiet" type="button" data-save-template="brand">Simpan sebagai template</button><button class="button primary" type="submit">Simpan panduan</button></div></div>
+          <div class="panel-heading full"><div><p class="eyebrow">SUMBER PENGETAHUAN NDI</p><h2>Identitas, layanan, dan panduan konten</h2><p class="muted">Identitas dan status produk mengikuti fakta resmi. Layanan, klaim, panduan, serta CTA disimpan sebagai pengetahuan bisnis yang ditinjau admin.</p></div></div>
+          <label>Nama perusahaan<input name="companyName" readonly></label>
+          <label>Positioning<input name="positioning" readonly></label>
+          <label class="full">Deskripsi perusahaan<textarea name="description" rows="3" readonly></textarea></label>
+          <label>Visi<textarea name="vision" rows="3" readonly></textarea></label>
+          <label>Misi<textarea name="mission" rows="3" readonly></textarea></label>
+          <label>Audiens utama<textarea name="primaryAudience" rows="2" readonly></textarea></label>
+          <label>Audiens lain<textarea name="secondaryAudience" rows="2" readonly></textarea></label>
+          <label class="full">NDI Ticketing — status produk<textarea name="ticketing" rows="3" readonly></textarea></label>
+          <label class="full">Layanan yang disetujui <span class="field-hint">Satu layanan per baris. Daftar ini menjadi sumber fakta layanan untuk AI.</span><textarea name="services" rows="5" maxlength="9000"></textarea></label>
+          <label class="full">Website Resmi / CTA URL <span class="field-hint">URL HTTPS yang dicantumkan pada setiap konten baru. Sistem tidak mengunjungi alamat ini.</span><input name="ctaUrl" type="url" inputmode="url" maxlength="2048" placeholder="https://nusadataindonesia.com" required></label>
+          <label class="full">Panduan konten <span class="field-hint">Maksimal 7.000 karakter. Panduan tidak dapat mengubah batas fakta dan klaim.</span><textarea name="contentGuidance" rows="4" maxlength="7000"></textarea></label>
+          <label class="full">Klaim tambahan yang disetujui <span class="field-hint">Satu per baris dan harus didukung fakta yang disetujui.</span><textarea name="approvedClaims" rows="3" maxlength="7000"></textarea></label>
+          <label class="full">Klaim atau frasa yang dilarang <span class="field-hint">Aturan dasar NDI tetap berlaku meski teks di sini diedit.</span><textarea name="forbiddenClaims" rows="4" maxlength="7000"></textarea></label>
+          <label class="full">Hashtag <span class="field-hint">Opsional, satu per baris. Hashtag lain dalam draf akan ditolak.</span><textarea name="hashtags" rows="2" maxlength="3000"></textarea></label>
+          <div class="form-footer full"><span class="muted">Perubahan menyetujui sumber pengetahuan aktif. Jangan masukkan kredensial atau data pelanggan.</span><div class="form-actions"><button class="button primary" type="submit">Tinjau dan simpan pengetahuan</button></div></div>
         </form>
+        <section class="panel stack" aria-labelledby="website-sync-title">
+          <div><p class="eyebrow">FASE C · SUMBER SEKUNDER</p><h2 id="website-sync-title">Sinkronkan Website NDI</h2><p class="muted">Permintaan ini hanya mengambil halaman resmi <strong>https://nusadataindonesia.com</strong> setelah tombol ditekan. Teks website adalah usulan yang belum tepercaya; setiap perubahan layanan perlu Anda tinjau satu per satu.</p></div>
+          <div class="form-actions"><button id="website-sync-button" class="button primary" type="button">Sinkronkan Website NDI</button></div>
+          <div id="website-sync-status" class="notice info" role="status">Sinkronisasi belum diminta.</div>
+          <div id="website-sync-proposals" class="integration-history" aria-live="polite"></div>
+          <div><h3>Riwayat sinkronisasi</h3><div id="website-sync-runs" class="integration-history"></div></div>
+        </section>
       </section>
 
-      <section id="tab-templates" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-templates" aria-hidden="true" tabindex="0" hidden>
-        <div class="panel template-intro"><p class="eyebrow">PANDUAN SIAP PAKAI</p><h2>Template konten dan produk</h2><p class="muted">Pilih template untuk mengisi form. Periksa dan sesuaikan isinya, lalu simpan dari form terkait. Template tidak menyimpan harga atau stok.</p></div>
-        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">GAYA BAWAAN</p><h2>Gaya komunikasi</h2><p class="muted">Template bawaan hanya mengubah gaya komunikasi.</p></div></div><div id="builtin-template-list" class="template-grid"></div></section>
-        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">KONTEN & BRAND</p><h2>Template panduan tersimpan</h2><p class="muted">Dapat digunakan dan dikelola semua admin.</p></div></div><div id="brand-template-list" class="template-grid"></div></section>
-        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">TOP-UP</p><h2>Template produk top-up</h2><p class="muted">Game harus berasal dari whitelist. Harga dan ketersediaan diisi langsung di form produk.</p></div></div><div id="topup-template-list" class="template-grid"></div></section>
-        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Template atribut akun</h2><p class="muted">Hanya menyimpan atribut akun yang telah disetujui, tanpa harga dan ketersediaan.</p></div></div><div id="account-template-list" class="template-grid"></div></section>
+      <section id="tab-strategy" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-strategy" aria-hidden="true" tabindex="0" hidden>
+        <section class="panel stack" aria-labelledby="strategy-title">
+          <div><p class="eyebrow">FASE B · STRATEGI KONTEN</p><h2 id="strategy-title">Kategori dan gaya</h2><p class="muted">Kategori dan gaya dipilih terpisah untuk setiap slot, lalu disimpan bersama snapshot CTA. Perubahan di sini tidak mengaktifkan otomasi.</p></div>
+          <div id="strategy-readiness" class="notice warning" role="status">Memuat status strategi…</div>
+          <div class="form-actions"><button id="strategy-enable" class="button primary" type="button" hidden>Aktifkan strategi</button><button id="strategy-disable" class="button quiet" type="button" hidden>Nonaktifkan strategi</button></div>
+        </section>
+        <form id="category-create-form" class="panel form-grid">
+          <div class="panel-heading full"><div><h3>Kategori konten</h3><p class="muted">Delapan kategori awal tersedia. Arsip mempertahankan referensi dan audit.</p></div></div>
+          <label>Nama kategori<input name="name" maxlength="120" required></label>
+          <label class="full">Panduan kategori<textarea name="guidance" rows="3" maxlength="3000" required></textarea></label>
+          <div class="form-footer full"><span class="muted">Panduan membentuk topik; knowledge bisnis yang disetujui tetap sumber fakta.</span><button class="button primary" type="submit">Tambah kategori</button></div>
+        </form>
+        <div id="strategy-categories" class="stack" aria-label="Daftar kategori"></div>
+        <form id="style-create-form" class="panel form-grid">
+          <div class="panel-heading full"><div><h3>Gaya bahasa</h3><p class="muted">Tujuh template awal tersedia. Instruksi diterapkan pada prompt generation dan dibatasi guardrail NDI.</p></div></div>
+          <label>Nama gaya<input name="name" maxlength="120" required></label>
+          <label class="full">Instruksi gaya<textarea name="instructions" rows="3" maxlength="3000" required></textarea></label>
+          <div class="form-footer full"><span class="muted">Instruksi bukan fakta bisnis dan tidak dapat mengubah CTA atau batas klaim.</span><button class="button primary" type="submit">Tambah gaya</button></div>
+        </form>
+        <div id="strategy-styles" class="stack" aria-label="Daftar gaya"></div>
+        <section class="panel stack" aria-labelledby="category-proposals-title">
+          <div><h3 id="category-proposals-title">Usulan kategori AI</h3><p class="muted">Usulan selalu menunggu persetujuan admin. Job terpisah dari scheduler penerbitan, default nonaktif, maksimal satu panggilan OpenRouter setiap interval.</p></div>
+          <form id="proposal-settings-form" class="form-grid">
+            <label class="check-row"><input name="enabled" type="checkbox"><span>Aktifkan pembuatan usulan berkala</span></label>
+            <label>Interval (30–365 hari)<input name="intervalDays" type="number" min="30" max="365" step="1" value="30" required></label>
+            <div class="form-footer full"><span id="proposal-schedule-status" class="muted">Status job belum dimuat.</span><button class="button quiet" type="submit">Simpan pengaturan usulan</button></div>
+          </form>
+          <div id="category-proposals" class="stack" aria-label="Daftar usulan kategori"></div>
+        </section>
       </section>
 
       <section id="tab-schedule" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-schedule" aria-hidden="true" tabindex="0" hidden>
@@ -155,69 +171,19 @@
           </div>
           <p class="field-hint full">Atur jeda waktu antara posting otomatis. Minimal 1 menit.</p>
           <p id="schedule-interval-summary" class="muted full">Interval yang akan disimpan: 1 jam.</p>
-          <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa informasi terbaru</option><option value="MIXED">MIXED · sekitar 1 dari 4 posting</option><option value="ON">ON · gunakan informasi terbaru</option></select></label>
-          <div class="form-footer full"><span class="muted">Laporan Telegram dikirim sekitar pukul 22:00 WIB. Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
+          <div class="form-footer full"><span class="muted">Laporan Telegram dikirim sekitar pukul 22:00 WIB.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
         </form>
         <div class="notice info"><strong>Untuk interval pendek</strong><span>Scheduler memeriksa jadwal tiap 60 detik secara default. Proses generasi atau publikasi yang masih berjalan akan diselesaikan lebih dulu; perhatikan batas provider dan biaya API.</span></div>
         <div class="notice info"><strong>Jeda darurat</strong><span>Hentikan tugas berikutnya dan minta Tebar membatalkan posting terjadwal yang masih bisa dibatalkan. Periksa hasilnya di log.</span></div>
       </section>
 
       <section id="tab-facts" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-facts" aria-hidden="true" tabindex="0" hidden>
-        <div class="notice info"><strong>Informasi kedaluwarsa otomatis</strong><span>Harga, stok, dan informasi penjualan hanya disebut jika diperbarui dalam 24 jam. Jika sudah kedaluwarsa, posting akan menggunakan konten umum.</span></div>
-        <div class="fact-grid">
-          <form id="fact-topup-form" class="panel stack fact-form" data-service="topup">
-            <div><p class="eyebrow">TOP-UP</p><h2>Ringkasan layanan</h2><p class="muted">Game, nominal, dan harga awal yang disetujui klien.</p></div>
-            <label>Game<input name="game" maxlength="100" placeholder="Mobile Legends"></label>
-            <label>Ringkasan nominal<input name="denomination" maxlength="120" placeholder="400 Diamond"></label>
-            <label>Harga IDR (Rp)<input name="price" inputmode="decimal" maxlength="12" placeholder="30000"></label>
-            <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Tersedia"></label>
-            <p class="fact-updated" data-updated>Belum diperbarui</p><div class="form-actions"><button class="button quiet" type="button" data-save-template="topup">Simpan sebagai template</button><button class="button primary" type="submit">Simpan info top-up</button></div>
-          </form>
-          <form id="fact-account-form" class="panel stack fact-form" data-service="account">
-            <div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Ringkasan layanan</h2><p class="muted">Hanya harga, ketersediaan, dan atribut yang disetujui klien.</p></div>
-            <label>Harga IDR (Rp)<input name="price" inputmode="decimal" maxlength="12" placeholder=""></label>
-            <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Hubungi kami untuk pilihan terkini"></label>
-            <label>Atribut yang disetujui <span class="field-hint">Satu atribut per baris</span><textarea name="attributes" rows="3" maxlength="1000" placeholder="Rank atau skin yang sudah diverifikasi"></textarea></label>
-            <p class="fact-updated" data-updated>Belum diperbarui</p><div class="form-actions"><button class="button quiet" type="button" data-save-template="account">Simpan sebagai template</button><button class="button primary" type="submit">Simpan info akun</button></div>
-          </form>
-        </div>
+        <section class="panel stack"><div><p class="eyebrow">PENGETAHUAN BISNIS DI DATABASE</p><h2>Layanan Nusa Data Indonesia</h2><p class="muted">Daftar ini adalah konteks layanan yang disetujui dan digunakan oleh generator konten.</p></div><ul id="ndi-service-list" class="checklist"></ul><div class="notice info"><strong>Produk dalam pengembangan</strong><span id="ndi-ticketing-summary">NDI Ticketing merupakan MVP pilot undangan untuk triase dukungan pelanggan.</span></div><p class="muted">Website Resmi / CTA URL: <a id="ndi-cta-link" href="https://nusadataindonesia.com" rel="noreferrer">https://nusadataindonesia.com</a></p></section>
       </section>
 
       <section id="tab-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-activity" aria-hidden="true" tabindex="0" hidden>
-        <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Posting terbaru</h2></div><button id="refresh-button" class="button quiet">Muat ulang</button></div><div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Tema</th><th>Status</th><th>Konten</th><th>Penilaian</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
+        <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Posting terbaru</h2></div><button id="refresh-button" class="button quiet">Muat ulang</button></div><div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Tema</th><th>Status</th><th>Konten</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
         <div class="panel log-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEM</p><h2>Aktivitas terbaru</h2></div></div><div id="activity-list" class="activity-list"></div></div>
-      </section>
-      <section id="tab-learning" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-learning" aria-hidden="true" tabindex="0" hidden>
-        <div class="page-heading"><div><p class="eyebrow">KENDALI ADMIN</p><h1>AI Learning</h1><p class="muted">Tinjau bukti dan atur pembelajaran. Persetujuan dan aktivasi adalah tindakan terpisah.</p></div><button id="learning-refresh" class="button quiet" type="button">Muat ulang</button></div>
-        <div id="learning-error" class="notice error" role="alert" hidden></div>
-        <div id="learning-capability-status" class="notice info" role="status">Memuat kemampuan pembelajaran…</div>
-        <div id="learning-text-data-guidance" class="notice info" role="note">Semua admin aktif dalam ruang kerja dapat membaca umpan balik dan teks aturan. Jangan masukkan data pribadi, kata sandi, token akses, atau rahasia.</div>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">TINJAUAN</p><h2>Kandidat Learning</h2><p class="muted">Periksa sumber dan instruksi sebelum mengambil keputusan. Bukti asal yang tidak tersedia tetap ditandai.</p></div></div><form id="learning-candidate-filter" class="learning-filters" role="search"><label>Status<select name="status"><option value="pending">Menunggu review</option><option value="approved">Disetujui</option><option value="rejected">Ditolak</option><option value="false_positive">False positive</option><option value="">Semua status</option></select></label><label>Sumber<select name="source"><option value="">Semua sumber</option><option value="validation">Validasi</option><option value="feedback">Feedback admin</option></select></label><label class="learning-search">Cari kandidat<input name="q" type="search" maxlength="80" autocomplete="off" placeholder="ID, kategori, slot, instruksi…"></label><button class="button quiet" type="submit">Cari</button></form><div id="learning-candidates" class="learning-list" aria-live="polite">Memuat…</div><button id="learning-next" class="button quiet" type="button" hidden>Kandidat berikutnya</button></section>
-        <dialog id="learning-candidate-dialog" class="template-dialog learning-dialog" aria-labelledby="learning-candidate-dialog-title"><div class="stack"><div><p class="eyebrow">BUTIR TINJAUAN</p><h2 id="learning-candidate-dialog-title">Rincian kandidat</h2></div><div id="learning-candidate-dialog-content" class="stack"></div><div class="form-actions"><button id="learning-candidate-dialog-close" class="button quiet" type="button">Tutup</button></div></div></dialog>
-        <form id="learning-feedback-form" class="panel form-grid">
-          <div class="panel-heading full"><div><p class="eyebrow">PENILAIAN MANUSIA</p><h2>Umpan balik kualitas</h2><p class="muted">Pilih sedikitnya satu dimensi. Nilai 1 buruk, 3 memadai, 5 sangat baik. Kolom kosong berarti tidak dinilai; kualitas tidak mengesampingkan validasi fakta dan keamanan.</p></div></div>
-          <label>ID slot konten<input name="slotId" required maxlength="36" autocomplete="off" placeholder="Gunakan tombol penilaian di Riwayat &amp; catatan"></label><label>Jenis umpan balik<select name="type" required><option value="positive">Positif</option><option value="negative">Negatif</option></select></label>
-          <label>Kekuatan pembuka<select name="hook"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select><span class="field-hint">Menarik dan relevan tanpa sensasi kosong.</span></label>
-          <label>Kreativitas<select name="creativity"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-          <label>Bahasa Indonesia<select name="language"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select><span class="field-hint">Ungkapan alami dan sesuai konteks audiens Indonesia.</span></label>
-          <label>Relevansi audiens<select name="relevance"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-          <label>Konsistensi brand<select name="brandVoice"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-          <label>Kejelasan narasi<select name="clarity"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-          <label>Keragaman konten<select name="diversity"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-          <label>Kesesuaian ajakan<select name="cta"><option value="">Tidak dinilai</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select><span class="field-hint">Wajar dan tanpa janji yang tidak didukung.</span></label>
-          <label class="full">Penjelasan (opsional)<textarea name="explanation" maxlength="1000" rows="3" aria-describedby="learning-text-data-guidance"></textarea></label><div class="form-footer full"><span class="muted">Umpan balik tidak langsung menjadi instruksi aktif.</span><button class="button primary" type="submit">Simpan umpan balik</button></div>
-        </form>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">ATURAN</p><h2>Pembelajaran Aktif</h2><p class="muted">Persetujuan, aktivasi, dan penggunaan prompt merupakan kontrol terpisah.</p></div></div><div id="learning-rules" class="learning-list" aria-live="polite">Memuat…</div></section>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT</p><h2>Riwayat Review</h2></div></div><div id="learning-reviews" class="learning-list" aria-live="polite">Memuat…</div></section>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">PENGUKURAN</p><h2>Tiga indikator bebas</h2><p class="muted">Pengamatan bukan bukti sebab-akibat. Sampel kecil dan hasil yang belum diketahui ditampilkan terpisah.</p></div></div><form id="learning-metric-range" class="learning-metric-range"><label>Rentang laporan<select name="days"><option value="30">30 hari</option><option value="90">90 hari</option><option value="365">365 hari</option></select></label><button class="button quiet" type="submit">Muat metrik</button></form><div id="learning-metrics" class="metrics" aria-live="polite"><p class="muted">Memuat metrik…</p></div></section>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">UJI TERKENDALI</p><h2>Shadow evaluation</h2><p class="muted">Membuat perbandingan di luar jadwal produksi. Hasil tidak membuat slot, tidak mengubah konfigurasi, dan tidak diterbitkan.</p></div></div>
-          <form id="learning-shadow-form" class="form-grid">
-            <label class="full">Aturan yang disetujui untuk dibandingkan<select name="ruleIds" multiple size="5" aria-describedby="learning-shadow-help"></select><span id="learning-shadow-help" class="field-hint">Pilih maksimal 5 aturan yang telah disetujui. Hanya cakupan yang sesuai dengan konteks akan digunakan.</span></label>
-            <label>Bilangan sampel pasangan<select name="samples"><option value="1">1 pasangan</option><option value="2">2 pasangan</option><option value="3">3 pasangan</option></select></label>
-            <div class="form-footer full"><span class="muted">Setiap pasangan menggunakan model, fakta, panduan, dan pengaturan sampling yang sama.</span><button class="button primary" type="submit" disabled>Jalankan perbandingan</button></div>
-          </form>
-          <div id="learning-shadow-results" class="learning-list" aria-live="polite"><p class="muted">Belum ada perbandingan shadow.</p></div>
-        </section>
       </section>
       <section id="tab-integrations" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-integrations" aria-hidden="true" tabindex="0" hidden>
         <section class="panel stack" aria-labelledby="integrations-title">
@@ -307,15 +273,6 @@
         </form>
         <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AKUN ADMIN</p><h2>Kelola akun</h2></div><button id="admins-refresh-button" class="button quiet" type="button">Muat ulang</button></div><div id="admin-list" class="admin-list"></div></section>
       </section>
-      <dialog id="template-dialog" class="template-dialog" aria-labelledby="template-dialog-title">
-        <form id="template-dialog-form" class="stack">
-          <div><p class="eyebrow">TEMPLATE KUSTOM</p><h2 id="template-dialog-title">Simpan template</h2><p class="muted">Template dibagikan kepada semua admin. Kolom persetujuan guardrail tidak ikut disalin.</p></div>
-          <label>Nama template<input name="templateName" maxlength="80" required></label>
-          <div id="template-editor-fields" class="template-editor-fields"></div>
-          <div id="template-dialog-error" class="notice error" role="alert" hidden></div>
-          <div class="form-actions"><button id="template-dialog-cancel" class="button quiet" type="button">Batal</button><button class="button primary" type="submit">Simpan template</button></div>
-        </form>
-      </dialog>
       <footer class="footer">Lingkungan pengembangan / staging · Tidak terhubung ke akun production klien</footer>
           </div>
         </div>

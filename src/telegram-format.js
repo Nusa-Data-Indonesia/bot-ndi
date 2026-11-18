@@ -8,8 +8,9 @@ const FAILURES = {
   generation_failed: 'AI tidak berhasil menghasilkan konten yang dapat diterbitkan.',
   content_validation_failed: 'Konten tidak memenuhi aturan validasi.',
   invalid_settings: 'Pengaturan konten belum valid.',
-  approved_content_invalid: 'Informasi produk yang disetujui tidak valid.',
-  onboarding_incomplete: 'Pengaturan awal belum lengkap.',
+  approved_content_invalid: 'Sumber pengetahuan bisnis NDI tidak valid.',
+  onboarding_incomplete: 'Tinjauan pengetahuan bisnis NDI belum lengkap.',
+  business_knowledge_review_required: 'Pengetahuan bisnis NDI perlu ditinjau sebelum penerbitan.',
   ai_not_configured: 'Penyedia AI belum dikonfigurasi.',
   ai_unauthorized: 'Penyedia AI menolak autentikasi.',
   ai_rate_limited: 'Penyedia AI sedang membatasi permintaan.',
@@ -17,7 +18,7 @@ const FAILURES = {
   ai_provider_error: 'Penyedia AI mengalami gangguan.',
   ai_invalid_response: 'Penyedia AI mengirim respons yang tidak dapat digunakan.',
   tebar_not_configured: 'Penyedia publikasi belum dikonfigurasi.',
-  stale_facts: 'Informasi atau pengaturan berubah sebelum publikasi.',
+  stale_facts: 'Pengetahuan, CTA, atau konten berubah sebelum publikasi.',
   stale_generation: 'Pembuatan konten melewati batas waktu.',
   provider_error: 'Penyedia publikasi melaporkan kegagalan.',
   rate_limited: 'Penyedia publikasi sedang membatasi permintaan.',
@@ -27,7 +28,7 @@ const FAILURES = {
   network_error: 'Penyedia publikasi tidak dapat dihubungi.',
 };
 /** @type {Record<string, string>} */
-const CATEGORY = { topup: 'Top-up', account: 'Jual akun' };
+const CATEGORY = { ndi: 'Konten NDI' };
 function safe(value, limit = 500) {
   return typeof value === 'string' ? Array.from(value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim()).slice(0, limit).join('') : '';
 }
@@ -49,12 +50,12 @@ function bounded(body, reference) {
   return `${body.length > room ? body.slice(0, Math.max(0, room - 1)).trimEnd() + '…' : body}${suffix}`;
 }
 /** @param {{status?: string, slotId?: string, brand?: string, time?: string | Date | null, timezone?: string, pillar?: string, caption?: string, postUrl?: string, nextAt?: string | Date | null, reason?: string, diagnosticCode?: string}} [notice] */
-function formatSlotNotice({ status, slotId, brand, time, timezone, pillar, caption, postUrl, nextAt, reason, diagnosticCode } = {}) {
+function formatSlotNotice({ status, slotId, time, timezone, pillar, caption, postUrl, nextAt, reason, diagnosticCode } = {}) {
   const ok = status === 'published';
   const pending = status === 'unknown' || status === 'publishing' || status === 'pending_verification';
   const title = ok ? 'BOT NDI — POSTING BERHASIL' : pending ? 'BOT NDI — STATUS POSTING DIPERIKSA' : 'BOT NDI — POSTING GAGAL';
   const state = ok ? 'Status: Berhasil diterbitkan' : pending ? 'Status: Menunggu konfirmasi publikasi' : 'Status: Gagal diterbitkan';
-  const parts = [title, `Brand: ${safe(brand, 100) || 'Nusa Data Indonesia'}\nPlatform: Threads\n${state}`];
+  const parts = [title, `Perusahaan: Nusa Data Indonesia\nPlatform: Threads\n${state}`];
   const stamp = dateTime(time, timezone);
   if (stamp) parts.push(`${ok ? 'Waktu publikasi' : 'Waktu percobaan'}: ${stamp}`);
   if (ok) {
@@ -72,9 +73,9 @@ function formatSlotNotice({ status, slotId, brand, time, timezone, pillar, capti
   return bounded(parts.join('\n\n'), slotId ? `Slot ID: ${safe(String(slotId), 36)}` : '');
 }
 /** @param {{brand?: string, date?: string | Date | null, timezone?: string, published?: number, failed?: number, unknown?: number, adminClosedUnknown?: number, categories?: Record<string, number>, failures?: Array<{code: string, count: number}>, automationEnabled?: boolean, nextAt?: string | Date | null, affectedSlotIds?: string[]}} [report] */
-function formatDailyReport({ brand, date, timezone = 'Asia/Jakarta', published = 0, failed = 0, unknown = 0, adminClosedUnknown = 0, categories, failures, automationEnabled, nextAt, affectedSlotIds = [] } = {}) {
+function formatDailyReport({ date, timezone = 'Asia/Jakarta', published = 0, failed = 0, unknown = 0, adminClosedUnknown = 0, categories, failures, automationEnabled, nextAt, affectedSlotIds = [] } = {}) {
   const total = published + failed;
-  const parts = ['BOT NDI — LAPORAN HARIAN', `Brand: ${safe(brand, 100) || 'Nusa Data Indonesia'}${dateTime(date, timezone, true) ? `\nTanggal: ${dateTime(date, timezone, true)}` : ''}\nZona waktu: ${safe(timezone, 60)}`,
+  const parts = ['BOT NDI — LAPORAN HARIAN', `Perusahaan: Nusa Data Indonesia${dateTime(date, timezone, true) ? `\nTanggal: ${dateTime(date, timezone, true)}` : ''}\nZona waktu: ${safe(timezone, 60)}`,
     `Ringkasan Publikasi\nBerhasil: ${published} posting\nGagal: ${failed} posting\nBelum pasti: ${unknown} posting\nSuccess Rate: ${total ? `${Math.round(published / total * 100)}%` : 'Belum tersedia'}`];
   if (Number.isSafeInteger(adminClosedUnknown) && adminClosedUnknown > 0) parts.push(`Ditutup admin, belum terverifikasi: ${adminClosedUnknown} posting`);
   if (categories && typeof categories === 'object') {

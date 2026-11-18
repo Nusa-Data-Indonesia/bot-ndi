@@ -3,7 +3,8 @@
 const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
-const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
+const { contentSafetyHash } = require('./content-safety');
+const { validateNdiCaption } = require('./content-validation');
 const { formatSlotNotice, formatDailyReport } = require('./telegram-format');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 
@@ -17,7 +18,7 @@ const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 /** @typedef {{status: string, text?: string, reason?: string, diagnosticCode?: string, attempts?: number, pillar?: string, factBearing?: boolean, factIds?: string[], factVersions?: Array<{id: string, updatedAt?: string | null}>, providerFailure?: {provider: string, code?: string, httpStatus?: number | null, transportCode?: string | null, timedOut?: boolean}}} GeneratedContent */
 /** @typedef {{kind: string, post?: ProviderPost, status?: string, patch?: {status?: string, providerStatus?: string, providerPostId?: string | null, errorCode?: string | null, completedAt?: Date | string | null}, [key: string]: unknown}} PublicationCallbackOutcome */
 /** @typedef {{repository: Repository, publisher?: Publisher | null, publisherForProfile?: (profileId: string) => Promise<Publisher>, notifier?: Notifier | null, counts?: ReconcileCounts, logger?: Logger, slotIds?: string[], profileId?: string | null, accountId?: string | null, correlationId?: string, clock?: () => Date}} ReconcileOptions */
-/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, allowedCtaHosts?: string[], maxPublishAttempts?: number}} RunDispatcherOptions */
+/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, maxPublishAttempts?: number}} RunDispatcherOptions */
 /** @typedef {{repository: Repository, publisherForProfile?: (profileId: string) => Promise<Publisher>, profileId?: string, accountId?: string, notifier?: Notifier | null, logger?: Logger, clock?: () => Date}} ReconcileSwitchOptions */
 /** @typedef {{repository: Repository, publisher: Publisher, notifier?: Notifier | null, profileId?: string, accountId?: string, adminId?: string | number | null}} PauseAutomationOptions */
 
@@ -103,6 +104,17 @@ function confirmedCompletedAt(status, post, expectedAccountId, observedAt) {
   return Number.isFinite(observedTime.getTime()) ? observedTime.toISOString() : null;
 }
 
+function confirmedPublishedAt(status, post, expectedAccountId) {
+  if (status !== 'published') return null;
+  const target = post?.targets?.find((candidate) => candidate?.accountId === expectedAccountId
+    && String(candidate.platform || '').toLowerCase() === 'threads'
+    && candidate.status === 'published');
+  const publishedAt = target?.publishedAt;
+  if (typeof publishedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(publishedAt)) return null;
+  const parsed = new Date(publishedAt);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
 function slotMatchesOriginalTarget(slot, profileId, accountId) {
   const targets = slot?.requestPayload?.targets;
   return slot?.profileId === profileId && slot?.accountId === accountId
@@ -138,6 +150,22 @@ async function sendNotice(notifier, code, details = {}) {
     await notifier.send(message, details.slotId ? `${safeCode(code)}:slot:${details.slotId}` : undefined);
     return true;
   } catch { return false; }
+}
+
+async function sendContentStrategyBlockNotice(notifier, code, at = new Date()) {
+  if (!notifier || typeof notifier.send !== 'function') return false;
+  const messages = {
+    CONTENT_STRATEGY_REVIEW_REQUIRED: 'Strategi konten NDI belum diaktifkan oleh admin. Tinjau kategori dan gaya konten di dashboard.',
+    CONTENT_CATEGORIES_EMPTY: 'Tidak ada kategori konten NDI yang aktif. Aktifkan atau buat kategori di dashboard; publikasi tetap diblokir.',
+    CONTENT_STYLES_EMPTY: 'Tidak ada gaya konten NDI yang aktif. Aktifkan atau buat gaya di dashboard; publikasi tetap diblokir.',
+    CONTENT_CATEGORY_ORDER_UNCERTAIN: 'Urutan publikasi kategori NDI belum dapat dipastikan dari timestamp provider. Tinjau status publikasi sebelum melanjutkan.',
+    CONTENT_STRATEGY_SNAPSHOT_MISSING: 'Slot lama tidak memiliki snapshot kategori dan gaya yang aman. Slot dibatalkan tanpa publikasi; buat slot baru setelah meninjau strategi.',
+  };
+  const message = messages[code] || 'Strategi konten NDI belum siap. Tinjau kategori dan gaya konten di dashboard.';
+  const date = new Date(at);
+  const day = Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : 'unknown-day';
+  try { await notifier.send(`Bot NDI: ${message}`, `content-strategy:${code}:${day}`); return true; }
+  catch { return false; }
 }
 
 async function cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId }) {
@@ -206,6 +234,7 @@ async function reconcileUnsettled({ repository, publisher, publisherForProfile, 
         providerPostId: post.id,
         errorCode: status === 'failed' || status === 'partial' || post.targets?.some((target) => target.status === 'failed') ? 'provider_error' : null,
         completedAt,
+        ...(status === 'published' ? { providerPublishedAt: confirmedPublishedAt(status, post, expectedAccountId) } : {}),
       });
       if (saved === false) { if (counts) counts.unknown++; continue; }
       try { logger?.info('publication.reconciled', { correlationId, slotId: slot.id, profileId: slot.profileId, accountId: expectedAccountId, status }); } catch { /* Observability must not change publishing. */ }
@@ -262,7 +291,6 @@ async function runDispatcher({
   contentGenerator,
   generatorForModel,
   logger,
-  allowedCtaHosts = [],
   correlationId = randomUUID(),
   maxPublishAttempts = 2,
 } = {}) {
@@ -282,6 +310,11 @@ async function runDispatcher({
   result.reconciled = await reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts: result, logger, ...targetScope, correlationId, clock });
   await maybeSendDailySummary({ repository, notifier, now, counts: result });
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
+  if (state.contentStrategyReady !== true) {
+    result.skipped++;
+    await sendContentStrategyBlockNotice(notifier, state.contentStrategyReasonCode, now);
+    return result;
+  }
 
   // A provider request with no definitive state blocks new posts until an
   // operator can reconcile it. This is deliberately fail-closed.
@@ -308,11 +341,12 @@ async function runDispatcher({
     }
   }
 
+  /** @type {{ timezone?: unknown, [key: string]: unknown }} */
   let schedule = { ...(state.settings?.schedule || {}) };
   if (typeof repository.ensureNextDueSlot === 'function') {
     const planned = await repository.ensureNextDueSlot({
       now,
-      timezone: schedule.timezone || timezone,
+      timezone: typeof schedule.timezone === 'string' ? schedule.timezone : timezone,
       schedule,
     });
     if (planned?.skippedCount > 0) {
@@ -332,19 +366,39 @@ async function runDispatcher({
   }
 
   const slot = await repository.claimDueSlot({ now });
+  if (slot?.blocked) {
+    result.skipped++;
+    await sendContentStrategyBlockNotice(notifier, slot.blocked, now);
+    return result;
+  }
   if (!slot) return result;
   result.claimed = 1;
   try { logger?.info('publication.claimed', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId }); } catch { /* Observability must not change publishing. */ }
 
   const claimedState = await repository.getRuntimeState();
-  if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId
+  if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId || claimedState.contentStrategyReady !== true
     || !slot.automationSessionId || claimedState.settings?.automationSessionId !== slot.automationSessionId) {
-    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: clock().toISOString() });
-    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+    const code = claimedState?.contentStrategyReady === false ? 'content_strategy_not_ready' : 'automation_paused';
+    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: code, completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code } });
+    result.skipped++;
+    return result;
+  }
+  if (!slot.contentStrategy?.category?.id || !slot.contentStrategy?.style?.id) {
+    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'content_strategy_snapshot_missing', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'content_strategy_snapshot_missing' } });
+    await sendContentStrategyBlockNotice(notifier, 'CONTENT_STRATEGY_SNAPSHOT_MISSING', clock());
     result.skipped++;
     return result;
   }
   state = claimedState;
+  if (state.businessKnowledgeApproved !== true || !slot.ctaUrl) {
+    await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'business_knowledge_review_required', attempts: 0 } });
+    await sendNotice(notifier, 'generation_failed', { repository, slotId: slot.id, diagnosticCode: 'business_knowledge_review_required' });
+    result.failed++;
+    return result;
+  }
   if (publisherForProfile) {
     if (!slot.profileId || !slot.accountId || slot.profileId !== state.profileId || slot.accountId !== state.accountId) {
       await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'target_snapshot_missing', completedAt: clock().toISOString() });
@@ -406,8 +460,14 @@ async function runDispatcher({
     return result;
   } else if (!generated) {
     try {
+      const slotSettings = {
+        ...state.settings,
+        businessKnowledge: { ...state.settings.businessKnowledge, ctaUrl: slot.ctaUrl },
+      };
       generated = await content({
         ...state,
+        businessKnowledgeApproved: true,
+        settings: slotSettings,
         now,
         history: state.history || [],
         facts: state.facts || [],
@@ -454,9 +514,18 @@ async function runDispatcher({
     return result;
   }
 
-  const currentSafetyHash = contentSafetyHash(state.settings, { allowedCtaHosts });
-  const previousSafetyHash = legacyContentSafetyHash(state.settings, { allowedCtaHosts });
-  if ((isPrepared && (!slot.contentSafetyHash || ![currentSafetyHash, previousSafetyHash].includes(slot.contentSafetyHash)))
+  if (!isPrepared) payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
+  const currentSafetyHash = contentSafetyHash(state.settings);
+  const ndiSettings = /** @type {{ hashtags?: string[], businessKnowledge?: { forbiddenClaims?: string[] } }} */ (state.settings || {});
+  const finalCaptionCheck = validateNdiCaption(payload?.content, {
+    ctaUrl: slot.ctaUrl,
+    hashtags: ndiSettings.hashtags || [],
+    forbiddenClaims: ndiSettings.businessKnowledge?.forbiddenClaims || [],
+  });
+  const targetIsValid = Array.isArray(payload?.targets) && payload.targets.length === 1
+    && payload.targets[0]?.account_id === state.accountId;
+  if (!finalCaptionCheck.valid || !targetIsValid
+      || (isPrepared && (!slot.contentSafetyHash || slot.contentSafetyHash !== currentSafetyHash))
       || (generated.factBearing === true && (!Array.isArray(generated.factIds) || !generated.factIds.length
       || !Array.isArray(generated.factVersions) || generated.factIds.some((id) => !generated.factVersions.some((version) => version?.id === id))))) {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
@@ -468,7 +537,6 @@ async function runDispatcher({
 
   if (!isPrepared) {
     idempotencyKey = makeIdempotencyKey(slot);
-    payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
     const saved = await repository.savePreparedSlot(slot.id, {
       requestPayload: payload,
       idempotencyKey,
@@ -477,7 +545,7 @@ async function runDispatcher({
       factBearing: generated.factBearing === true,
       factIds: generated.factIds || [],
       ...(generated.factVersions ? { factVersions: generated.factVersions } : {}),
-      contentSafetyHash: contentSafetyHash(state.settings, { allowedCtaHosts }),
+      contentSafetyHash: contentSafetyHash(state.settings),
     });
     if (saved === false) {
       await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
@@ -597,6 +665,7 @@ async function runDispatcher({
         providerPostId: post.id,
         errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null,
         completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null,
+        ...(status === 'published' ? { providerPublishedAt: confirmedPublishedAt(status, post, state.accountId) } : {}),
       };
       callbackOutcome = { kind: 'accepted', post, status, initialUpdate, patch: initialUpdate };
       if (await recordOutcome(initialUpdate) === false) callbackOutcome = { kind: 'fence_lost' };
@@ -640,14 +709,14 @@ async function runDispatcher({
         const post = await publisher.getPost(providerPostId);
         const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
         const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
-        const saved = await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
+        const saved = await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null, ...(status === 'published' ? { providerPublishedAt: confirmedPublishedAt(status, post, state.accountId) } : {}) });
         if (saved === false) { result.unknown++; return result; }
         const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId: state.accountId });
         const finalPost = cancellation.post;
         const finalStatus = cancellation.status;
         if (finalPost !== post || cancellation.cancellationStatus) {
           const finalCompletedAt = ['published', 'failed', 'canceled', 'partial'].includes(finalStatus) ? confirmedCompletedAt(finalStatus, finalPost, state.accountId, clock()) : null;
-          const savedFinal = await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
+          const savedFinal = await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(finalStatus === 'published' ? { providerPublishedAt: confirmedPublishedAt(finalStatus, finalPost, state.accountId) } : {}), ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
           if (savedFinal === false) { result.unknown++; return result; }
         }
         if (cancellation.cancellationStatus) {
@@ -735,6 +804,7 @@ async function runDispatcher({
         providerPostId: post.id,
         errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null,
         completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? confirmedCompletedAt(status, post, state.accountId, clock()) : null,
+        ...(status === 'published' ? { providerPublishedAt: confirmedPublishedAt(status, post, state.accountId) } : {}),
         ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}),
       };
       try { const saved = await repository.updateSlot(slot.id, finalUpdate); if (saved === false) { result.unknown++; return result; } }
@@ -830,4 +900,4 @@ async function pauseAutomation({ repository, publisher, notifier, profileId, acc
   return { enabled: false, outcomes };
 }
 
-module.exports = { runDispatcher, pauseAutomation, reconcileUnsettled, reconcileSwitch, maybeSendDailySummary, safeCode };
+module.exports = { runDispatcher, pauseAutomation, reconcileUnsettled, reconcileSwitch, maybeSendDailySummary, safeCode, confirmedPublishedAt, sendContentStrategyBlockNotice };

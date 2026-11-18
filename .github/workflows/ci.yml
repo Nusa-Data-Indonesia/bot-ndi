@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, codex/ndi-phase-b, codex/ndi-phase-c]
 
 permissions:
   contents: read
@@ -65,7 +65,7 @@ jobs:
         run: npm run test:integration
       - name: Prepare isolated migration test schemas
         run: |
-          docker exec '${{ job.services.mysql.id }}' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE DATABASE bot_ndi_test_018; CREATE DATABASE bot_ndi_test_upgrade; CREATE DATABASE bot_ndi_test_publication_upgrade;"'
+          docker exec '${{ job.services.mysql.id }}' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE DATABASE bot_ndi_test_018; CREATE DATABASE bot_ndi_test_upgrade; CREATE DATABASE bot_ndi_test_publication_upgrade; CREATE DATABASE bot_ndi_test_ndi_upgrade;"'
       - name: Verify migration 018 recovery
         env:
           DB_NAME: bot_ndi_test_018
@@ -96,6 +96,12 @@ jobs:
           DB_USER: root
           DB_PASSWORD: root-test-password-only
         run: node --test test/publication-resolution-legacy.mysql.integration.test.js
+      - name: Verify NDI business migration against legacy data
+        env:
+          DB_NAME: bot_ndi_test_ndi_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/ndi-migration.mysql.integration.test.js
       - name: Validate deployment script syntax
         run: bash -n scripts/deploy-homelab.sh
       - name: Validate local Docker image build

@@ -1,0 +1,58 @@
+# Rencana dan Hasil Implementasi Bot NDI
+
+Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Kandidat `codex/ndi-abc-integration` dibuat dari `origin/main` dan mengintegrasikan sejarah PR #3/#4/#5 dengan satu merge commit tanpa mengubah branch lama. PR lama tetap terbuka sampai cakupan integrasi dibuktikan. Tidak ada merge atau deployment dalam pekerjaan ini.
+
+## Fase A — Identitas bisnis dan pembersihan logika
+
+### Hasil
+
+- Knowledge NDI tersimpan di MySQL dan harus disetujui admin. Prompt, context, validator, notifikasi dan UI menggunakan identitas Nusa Data Indonesia; konten historis dan data game/top-up tidak masuk generation aktif.
+- Satu field **Website Resmi / CTA URL** menerima URL HTTPS valid, terpisah dari origin dashboard dan website sync. CTA disimpan per-slot saat claim; payload final dan retry memakai snapshot yang sama.
+- Migrasi 021 additive mengarsipkan data legacy sebelum membersihkan konfigurasi aktif, menjaga slot, session, integrasi, audit, facts dan status automation. Unknown tidak di-replay otomatis; slot lama yang tidak memiliki bukti NDI gagal tertutup.
+- PR #3 masih terbuka dan belum merge.
+
+## Fase B — Mesin strategi konten
+
+### Implementasi
+
+- Migration 022 membuat schema kategori, style, proposal, konfigurasi strategi dan waktu publish provider. Delapan kategori dan tujuh gaya default dimasukkan idempotent tanpa menimpa perubahan admin.
+- CRUD, status aktif/nonaktif, archive, histori, dan audit menggunakan route admin. Strategi harus di-review dan diaktifkan eksplisit saat automation dijeda. Migration tidak mengaktifkan strategi, automation, atau scheduler.
+- Selector kategori dan style uniform serta independen. Kategori provider-confirmed terakhir dikecualikan bila ada pilihan lain. State hanya maju setelah Tebar mengonfirmasi target Threads `published` dengan timestamp valid; timestamp hilang/seri memblokir generasi dengan alasan uncertain. Tidak menggunakan waktu lokal sebagai pengganti bukti provider.
+- Kategori/style dan instruksi kreatifnya disnapshot per logical slot dalam transaksi. Retry/restart mempertahankan snapshot. Guardrail fakta tetap berasal dari knowledge NDI yang disetujui; kategori/gaya tidak dapat menambah klaim bisnis.
+- Proposal kategori AI disimpan terpisah; admin menyetujui/menolak secara eksplisit. Job terpisah dari scheduler publishing, default OFF, interval 30–365 hari, tidak berjalan segera saat start, satu panggilan maksimum 400 token per run, error terisolasi.
+
+### File utama
+
+`migrations/022_content_strategy.sql`, `src/content-strategy.js`, `src/category-proposals.js`, `src/repository.js`, `src/dispatcher.js`, `src/content-context.js`, `src/content-service.js`, `src/http/routes/content-strategy.js`, `public/app.js`, `public/index.html`, serta unit/DB tests terkait.
+
+## Fase C — Sync knowledge manual dari website
+
+### Implementasi
+
+- Migration 023 menambah run/proposal dengan versioning dan provenance. Sync hanya dimulai lewat tombol/API POST admin yang melewati session, same-origin, CSRF dan audit; tidak ada timer/crawler.
+- Fetch dibatasi ke origin tetap `https://nusadataindonesia.com/`, terpisah dari CTA URL. Klien memeriksa DNS publik, mem-pin alamat yang telah lolos, memverifikasi TLS/hostname, menolak redirect, dan membatasi timeout, ukuran, jenis konten, serta parsing HTML. Konten web disimpan sebagai input tidak tepercaya dan tidak dikirim ke AI generation.
+- Diff dibuat per layanan. Add/edit/remove menjadi proposal independen dengan versi knowledge saat fetch. Admin menyetujui/menolak per-item. Approval menggunakan pemeriksaan versi; perubahan manual lebih baru menghasilkan conflict dan tidak ditimpa. Fetch/parse failure tidak memodifikasi knowledge aktif atau posting.
+
+### File utama
+
+`migrations/023_manual_website_knowledge_sync.sql`, `src/website-knowledge-sync.js`, `src/repository.js`, `src/http/routes/website-sync.js`, `src/server.js`, `src/cli.js`, dashboard `public/app.js`/`public/index.html`, serta unit/route/MySQL tests terkait.
+
+## Verifikasi
+
+- `npm test`: 510 total, 504 pass, 0 fail, 6 skipped; enam migration tests dijalankan terpisah dan semuanya lulus.
+- `npm run test:integration`: 94 pass; MySQL config check: 1 pass. Dedicated migration tests untuk 018, Learning upgrade, publication resolution 020/fence/legacy closure dan NDI 021–023 masing-masing 1/1 pass pada MySQL 8.4 disposable. Restart test juga pass pada storage disposable yang mempertahankan data.
+- `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit` (0 vulnerabilities), `bash -n`, Compose config, Docker build, Browser E2E 4/4, dan workflow regression checks: PASS.
+- `actionlint v1.7.12` lulus dengan ignore sempit untuk custom self-hosted label `bot-ndi` dan properti `concurrency.queue` yang didukung dokumentasi GitHub namun belum dikenali schema linter. GitHub Actions PR integrasi #6 run `44333658497` lulus pada candidate commit `bab30a40b22e46d11fa7657cd3d07855ad12a785`.
+- Dua percobaan awal gagal akibat konfigurasi pengujian (MySQL disposable `tmpfs` tidak mempertahankan data setelah restart, serta migration tests berbagi schema saat dijalankan paralel); keduanya lulus setelah setup diperbaiki dan migration tests dijalankan serial pada schema disposable baru.
+- Tidak menjalankan provider nyata, posting Threads, scheduler, atau migrasi pada produksi. Detail per-test ada di `docs/ndi-requirements-traceability.md`.
+
+## Migrasi, kompatibilitas, dan rollout
+
+Migrations 021–023 hanya menambah tabel/kolom/indeks dan nilai default; tidak ada `DROP`, `DELETE`, `TRUNCATE`, reset database, atau perubahan named volume. Migration integration test menjalankan upgrade dan rerun pada schema disposable. DDL MySQL dapat commit implisit. Rollback binary tidak mengembalikan DDL, knowledge, strategi, proposal, atau audit; image lama mungkin tidak mengenali struktur baru. Operator menerima risiko melewati backup/restore karena aplikasi belum digunakan secara operasional; backup/restore test **NOT_EXECUTED** dan tidak dicatat sebagai PASS. Snapshot runtime untuk R-055 diberikan operator dan tidak diverifikasi lewat query langsung. Tidak ada koneksi atau migration produksi.
+
+Fase B membutuhkan PR Phase A lebih dahulu; Fase C bergantung pada struktur dan guardrail B. Tebar harus mengembalikan `published_at` yang sah agar rotasi kategori berlanjut; jika provider tidak menyediakannya, aplikasi berhenti fail-closed. Belum ada verifikasi langsung terhadap capability provider di akun NDI.
+
+## GO / NO-GO
+
+- **GO untuk review PR integrasi A+B+C** setelah quality gates lokal lulus; final CI GitHub PR masih harus lulus sebelum kandidat dianggap siap merge. PR #3/#4/#5 tetap terbuka; PR integrasi menggantikannya untuk satu rilis.
+- **NO-GO merge/deployment saat ini** karena instruksi pengguna melarang merge/deployment pada task ini. Merge ke `main` dapat memicu auto-deployment. R-068 risk acceptance tercatat, dan tidak ada klaim backup/restore PASS.

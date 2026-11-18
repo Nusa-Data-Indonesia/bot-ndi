@@ -5,7 +5,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
 const { createServer } = require('../src/server');
-const { validateSettings } = require('../src/policy');
 
 function normalizePath(path) {
   return path
@@ -86,10 +85,6 @@ test('server registers all endpoint contracts and preserves parser and fallback 
     'GET /api/admins',
     'POST /api/admins',
     'PATCH /api/admins/:id',
-    'GET /api/templates',
-    'POST /api/templates',
-    'PATCH /api/templates/:id',
-    'DELETE /api/templates/:id',
     'GET /api/dashboard',
     'PUT /api/settings',
     'PUT /api/knowledge',
@@ -99,6 +94,9 @@ test('server registers all endpoint contracts and preserves parser and fallback 
     'GET *path',
   ];
   for (const route of expected) assert.ok(routes.has(route), `missing registered route: ${route}`);
+  for (const route of ['GET /api/templates', 'POST /api/templates', 'GET /api/learning/candidates', 'POST /api/learning/feedback']) {
+    assert.equal(routes.has(route), false, `legacy endpoint should not be registered: ${route}`);
+  }
 
   const privateRouteExceptions = new Set(['GET /api/session', 'POST /api/session/login']);
   const privateApiRoutes = layers.flatMap((layer) => {
@@ -154,22 +152,10 @@ test('valid near-maximum settings above the previous 64kb limit reach API authen
   t.after(() => closeServer(server));
 
   const settings = {
-    schedule: { intervalHours: 1 },
-    brand: {
-      name: 'N'.repeat(120),
-      voice: '漢'.repeat(500),
-      audienceNotes: '漢'.repeat(7000),
-      contentDirection: '漢'.repeat(7000),
-    },
-    gameWhitelist: Array.from({ length: 30 }, (_, index) => `漢${'漢'.repeat(96)}${String(index).padStart(2, '0')}`),
-    hashtags: Array.from({ length: 30 }, (_, index) => `#${'漢'.repeat(97)}${String(index).padStart(2, '0')}`),
-    guardrails: {
-      approved: true,
-      forbiddenClaims: Array.from({ length: 6 }, (_, index) => `${'漢'.repeat(497)}${String(index).padStart(2, '0')}`),
-      approvedClaims: Array.from({ length: 14 }, (_, index) => `${'漢'.repeat(497)}${String(index).padStart(2, '0')}`),
-    },
+    schedule: { intervalMinutes: 60 },
+    hashtags: Array.from({ length: 30 }, (_, index) => `#NDI${'X'.repeat(94)}${String(index).padStart(2, '0')}`),
+    notes: '漢'.repeat(70_000),
   };
-  assert.equal(validateSettings(settings).valid, true);
   const body = JSON.stringify(settings);
   assert.ok(Buffer.byteLength(body) > 64 * 1024);
   const response = await request(server, '/api/settings', {

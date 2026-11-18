@@ -121,7 +121,7 @@ Isi dengan credential baru, hanya di LXC:
 
 - `HOST_IP`: alamat IPv4 LXC yang diverifikasi pada langkah 1. Port aplikasi hanya dipetakan ke alamat ini.
 - `BASE_URL=https://botndi.sequein.my.id`.
-- `APPROVED_CTA_HOSTS`: kosongkan sampai NDI menyetujui hostname tujuan tautan pemasaran; `botndi.sequein.my.id` adalah domain aplikasi dan tidak dianggap otomatis sebagai domain CTA.
+- **Website Resmi / CTA URL** dikelola admin di dashboard dan tersimpan di database; default-nya `https://nusadataindonesia.com`. Nilai CTA boleh berupa URL HTTPS valid pada hostname mana pun. CTA tidak memicu request server; domain dashboard tetap berbeda dari URL pemasaran.
 - `TRUST_PROXY`: setelah memeriksa route gateway, isi alamat IP aktual Traefik yang menjadi peer koneksi ke aplikasi. Untuk sementara gunakan `false` jika alamat sumber belum diverifikasi; jangan gunakan `true` atau rentang umum.
 - `DB_NAME=bot_ndi` dan `DB_USER=bot_ndi_app`; buat nilai baru dan unik untuk `DB_PASSWORD` serta `DB_ROOT_PASSWORD`.
 - Biarkan `EXTERNAL_INTEGRATIONS_ENABLED=false`, `SCHEDULER_ENABLED=false`, dan semua `LEARNING_*_ENABLED=false` selama initial deployment.
@@ -239,7 +239,7 @@ Gunakan gateway LXC `10080` serta Cloudflare Tunnel dan Traefik yang sudah ada. 
 6. Isi `TRUST_PROXY` pada `.env` dengan IP sumber Traefik yang terlihat oleh Bot NDI setelah diverifikasi. Aplikasi tidak boleh mempercayai seluruh proxy (`true`) tanpa kontrol jaringan yang sesuai.
 7. Pertahankan `BASE_URL=https://botndi.sequein.my.id`. Di production, aplikasi mengirim session cookie `HttpOnly`, `SameSite=Strict`, dan `Secure`; TLS publik harus tetap aktif di Cloudflare/ingress.
 8. Dashboard memakai autentikasi admin aplikasi. Buat password admin kuat dan berikan akun hanya kepada operator yang berwenang. Jangan menganggap hostname publik atau Cloudflare tunnel sebagai pengganti autentikasi dashboard.
-9. Sebelum mengaktifkan integrasi atau posting, review bahasa konten, brand/fakta, klaim yang diizinkan, dan allowlist CTA pada `src/policy.js`; ganti hanya dengan kebijakan serta domain NDI yang disetujui. Perubahan infrastruktur tidak mengubah aturan produk tersebut.
+9. Sebelum aktivasi, review pengetahuan bisnis NDI dan klaim yang disetujui pada dashboard, periksa URL CTA, serta pastikan tidak ada slot lama yang masih membutuhkan rekonsiliasi. Migrasi 021 meminta persetujuan ulang atas knowledge bisnis; jangan mengaktifkan scheduler atau integrasi sebagai bagian dari migrasi.
 
 Jangan mempublikasikan MySQL melalui Traefik, Cloudflare Tunnel, atau port host. Jangan mengubah route aplikasi gateway lain.
 
@@ -338,16 +338,15 @@ gzip -t "$BACKUP"
 sha256sum "$BACKUP"
 ```
 
-Catat SHA release aktif dan salin backup terenkripsi ke media off-host. Uji restore pada volume disposable dengan nama terpisah dari produksi:
+Catat SHA release aktif dan salin backup terenkripsi ke media off-host. Uji restore dalam container disposable dengan `/var/lib/mysql` di tmpfs; jangan membuat atau menghapus Docker volume untuk pengujian:
 
 ```sh
-docker volume create bot-ndi_restore_test
 docker run --pull=never -d --name bot-ndi-restore-test \
   -e MYSQL_ROOT_PASSWORD=restore-only-password \
   -e MYSQL_DATABASE=bot_ndi \
   -e MYSQL_USER=bot_ndi_app \
   -e MYSQL_PASSWORD=restore-only-password \
-  -v bot-ndi_restore_test:/var/lib/mysql mysql:8.4
+  --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=2g mysql:8.4
 
 for attempt in $(seq 1 30); do
   docker exec -e MYSQL_PWD=restore-only-password bot-ndi-restore-test \
@@ -362,11 +361,10 @@ docker exec -e MYSQL_PWD=restore-only-password bot-ndi-restore-test \
   mysql --user=root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='bot_ndi'"
 ```
 
-Hasil akhir harus menampilkan jumlah tabel lebih dari nol. Jika import atau pemeriksaan gagal, pertahankan container dan volume test untuk investigasi. Setelah hasil valid dan hanya setelah memastikan nama disposable persis seperti di atas, hapus sumber tes secara manual:
+Hasil akhir harus menampilkan jumlah tabel lebih dari nol. Jika import atau pemeriksaan gagal, pertahankan container test untuk investigasi. Setelah hasil valid, hentikan container; filesystem database test berada di tmpfs dan akan ikut hilang bersama container:
 
 ```sh
 docker rm -f bot-ndi-restore-test
-docker volume rm bot-ndi_restore_test
 ```
 
 Untuk pemulihan produksi, lakukan hanya dengan persetujuan operator dan setelah restore disposable berhasil: hentikan app agar tidak menulis, simpan backup keselamatan terbaru, verifikasi checksum serta SHA/migration history backup yang dipilih, lalu restore dump ke database tujuan melalui MySQL. Dump berisi `DROP DATABASE`/`CREATE DATABASE`; restore tersebut mengganti isi schema `bot_ndi`, meskipun volume Docker tidak dihapus. Setelah import sukses, jalankan migrasi dari release yang kompatibel, mulai app kembali, dan pastikan `/health/ready` sehat. Pertahankan volume serta image lama sampai pemeriksaan selesai. Jangan melakukan restore in-place bila backup, commit, atau migration history belum dipastikan.

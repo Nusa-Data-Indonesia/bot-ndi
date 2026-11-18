@@ -29,10 +29,14 @@ test('upgrade from existing 011 records retains legacy evidence as unavailable',
     // Simulate a crash after the first DDL statement in migration 014 committed.
     const attemptMigration = await fs.readFile(path.join(migrationDir,'014_generation_attempts.sql'),'utf8');
     await pool.query(attemptMigration.split(';').map((part)=>part.trim()).filter(Boolean)[0]);
+    const laterMigrations = (await fs.readdir(migrationDir))
+      .filter((file) => /^\d+_.*\.sql$/.test(file) && Number.parseInt(file, 10) > 21)
+      .sort((left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10));
     assert.deepEqual(await runMigrations(pool),[
       '013_validation_outcome_observations.sql','014_generation_attempts.sql','015_learning_lifecycle.sql',
       '016_learning_shadow_evaluation.sql','017_generation_learning_snapshots.sql','018_learning_quality_analytics_index.sql',
-      '019_learning_shadow_admission.sql','020_manual_publication_resolution.sql',
+      '019_learning_shadow_admission.sql','020_manual_publication_resolution.sql','021_ndi_business_knowledge.sql',
+      ...laterMigrations,
     ]);
     const [[retained]]=await pool.execute('SELECT COUNT(*) AS n FROM learning_capture_events WHERE event_id=?',['legacy-event']);
     assert.equal(Number(retained.n),1);

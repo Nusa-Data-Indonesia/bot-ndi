@@ -1,16 +1,17 @@
 'use strict';
 
-const { validateSettings, isFactFresh, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT } = require('../../policy');
+const { validateNdiSettings } = require('../../ndi-settings');
+const { validateBusinessKnowledge } = require('../../business-knowledge');
 
-function registerDashboardRoutes(app, { repository, services, authenticated, mutation, allowedCtaHosts = [] }) {
+function registerDashboardRoutes(app, { repository, services, authenticated, mutation }) {
   app.get('/api/dashboard', authenticated, async (_req, res, next) => {
     try {
-      const [state, facts, posts, activity, audit] = await Promise.all([
+      const [state, posts, activity, audit, contentStrategy] = await Promise.all([
         repository.getRuntimeState(),
-        repository.listFacts(),
         repository.listSlots(100),
         repository.listActivity(100),
         repository.listAudit(100),
+        repository.getContentStrategyState ? repository.getContentStrategyState() : null,
       ]);
       const [provider, clicks] = await Promise.all([
         services.getProviderStatus
@@ -20,24 +21,19 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
           ? Promise.resolve().then(() => services.getClickMetric(state)).catch(() => ({ available: false, value: null, reason: 'provider_unavailable' }))
           : { available: false, value: null, reason: 'not_configured' },
       ]);
-      const now = new Date();
-      const checkedSettings = validateSettings(state.settings || {}, { allowedCtaHosts });
+      const checked = validateNdiSettings(state.settings || {});
+      const knowledgeReady = checked.valid && state.businessKnowledgeApproved === true;
       const items = [
-        { key: 'brand', label: 'Nama dan gaya komunikasi brand', required: true, complete: Boolean(state.settings?.brand?.name && state.settings?.brand?.voice) },
-        { key: 'games', label: 'Whitelist game top-up', required: false, complete: Array.isArray(state.settings?.gameWhitelist) && state.settings.gameWhitelist.length > 0 },
-        { key: 'guardrails', label: 'Batasan AI disetujui klien', required: false, complete: state.settings?.guardrails?.approved === true },
-        { key: 'links', label: 'Tautan top-up dan jual akun', required: true, complete: checkedSettings.valid && Boolean(checkedSettings.settings.trackedLinks.topup && checkedSettings.settings.trackedLinks.account) },
-        { key: 'hashtags', label: 'Hashtag otomatis', required: true, complete: checkedSettings.valid && checkedSettings.settings.hashtags.length > 0 },
-        { key: 'facts', label: 'Ringkasan top-up dan akun yang ditinjau', required: false, complete: ['topup', 'account'].every((key) => facts[key] && isFactFresh(facts[key], now)) },
+        { key: 'contentStrategy', label: 'Strategi konten NDI disetujui', required: true, complete: state.contentStrategyReady === true },
+        { key: 'knowledge', label: 'Pengetahuan bisnis NDI dan Website Resmi / CTA URL', required: true, complete: knowledgeReady },
         { key: 'thread', label: 'Akun uji Threads aktif di Tebar', required: true, complete: provider.connected === true },
         { key: 'ai', label: 'Penyedia AI dikonfigurasi', required: true, complete: services.aiConfigured === true },
       ];
-      const freshFacts = ['topup', 'account'].filter((key) => facts[key] && isFactFresh(facts[key], now)).length;
       const metrics = {
         success30d: posts.filter((post) => post.status === 'published'
           && new Date(post.completedAt || post.createdAt) > new Date(Date.now() - 30 * 86400000)).length,
         attention: posts.filter((post) => ['failed', 'unknown'].includes(post.status)).length,
-        freshFacts,
+        services: Array.isArray(state.businessKnowledge?.services) ? state.businessKnowledge.services.length : 0,
         clicks,
       };
       const recentActivity = [...activity, ...audit]
@@ -45,11 +41,20 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
         .slice(0, 100);
       return res.json({
         settings: state.settings || {},
-        facts,
+        businessKnowledge: state.businessKnowledge || null,
+        businessKnowledgeApproved: state.businessKnowledgeApproved === true,
+        businessKnowledgeVersion: Number(state.businessKnowledgeVersion || 1),
+        contentStrategy,
         posts,
         activity: recentActivity,
         provider,
-        automation: { enabled: state.automationEnabled === true },
+        automation: {
+          enabled: state.automationEnabled === true,
+          onboardingComplete: state.onboardingComplete === true,
+          contentStrategyReady: state.contentStrategyReady === true,
+          contentStrategyReason: state.contentStrategyReason || null,
+          contentStrategyReasonCode: state.contentStrategyReasonCode || null,
+        },
         onboarding: items,
         metrics,
       });
@@ -59,11 +64,10 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
   });
 
   app.put('/api/settings', authenticated, mutation, async (req, res, next) => {
-    const checked = validateSettings(req.body, { allowedCtaHosts });
+    const checked = validateNdiSettings(req.body);
     if (!checked.valid) return res.status(400).json({ error: 'INVALID_SETTINGS', fields: checked.errors });
     try {
-      const saved = await repository.saveSettings(checked.settings, req.admin.id);
-      return res.json(saved);
+      return res.json(await repository.saveSettings(checked.settings, req.admin.id));
     } catch (error) {
       return next(error);
     }
@@ -73,51 +77,19 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || JSON.stringify(req.body).length > 10000) {
       return res.status(400).json({ error: 'INVALID_KNOWLEDGE' });
     }
-    const checked = validateSettings({ brand: req.body.brand, guardrails: req.body.guardrails }, { allowedCtaHosts });
+    const checked = validateBusinessKnowledge(req.body);
     if (!checked.valid) return res.status(400).json({ error: 'INVALID_KNOWLEDGE', fields: checked.errors });
-    const knowledge = { brand: checked.settings.brand, guardrails: checked.settings.guardrails };
     try {
-      return res.json(await repository.saveKnowledge(knowledge, req.admin.id));
+      return res.json(await repository.saveKnowledge(checked.knowledge, req.admin.id));
     } catch (error) {
       return next(error);
     }
   });
 
-  app.put('/api/facts/:service', authenticated, mutation, async (req, res, next) => {
-    const { service } = req.params;
-    const { summary, active } = req.body || {};
-    if (!['topup', 'account'].includes(service) || !summary || typeof summary !== 'object' || Array.isArray(summary)
-      || typeof active !== 'boolean' || JSON.stringify(summary).length > 4000) {
-      return res.status(400).json({ error: 'INVALID_FACT' });
-    }
-    if (summary.price !== undefined && summary.price !== '' && !/^\d{1,8}(?:\.\d{1,2})?$/.test(String(summary.price))) {
-      return res.status(400).json({ error: 'INVALID_FACT_PRICE' });
-    }
-    const allowed = service === 'topup'
-      ? ['game', 'denomination', 'price', 'availability']
-      : ['game', 'price', 'availability', 'attributes'];
-    if (Object.keys(summary).some((key) => !allowed.includes(key))
-      || (service === 'account' && summary.game && summary.game !== 'Mobile Legends')) {
-      return res.status(400).json({ error: 'INVALID_FACT_FIELDS' });
-    }
-    if (service === 'topup') {
-      const settings = await repository.getSettings();
-      if (typeof summary.game !== 'string' || !settings.gameWhitelist?.includes(summary.game)) {
-        return res.status(400).json({ error: 'GAME_NOT_WHITELISTED' });
-      }
-    }
-    for (const [key, value] of Object.entries(summary)) {
-      const valid = key === 'attributes'
-        ? Array.isArray(value) && value.length <= MAX_APPROVED_ATTRIBUTE_COUNT && value.every(isSafeApprovedAttribute)
-        : typeof value === 'string' && value.length <= 200;
-      if (!valid) return res.status(400).json({ error: 'INVALID_FACT_FIELDS' });
-    }
-    try {
-      return res.json(await repository.saveFact(service, { summary, active }, req.admin.id));
-    } catch (error) {
-      return next(error);
-    }
-  });
+  // Historical product facts remain in the database for auditability but are
+  // no longer accepted as active source knowledge for NDI generation.
+  app.put('/api/facts/:service', authenticated, mutation, (_req, res) =>
+    res.status(410).json({ error: 'LEGACY_FACTS_ARCHIVED', message: 'Fakta produk lama disimpan sebagai riwayat dan tidak lagi dapat digunakan untuk konten NDI.' }));
 }
 
 module.exports = { registerDashboardRoutes };
