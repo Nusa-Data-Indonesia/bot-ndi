@@ -37,14 +37,14 @@ Rencana ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Branch kerja `codex
 
 ### Verifikasi dan gate A
 
-- `npm test`: **PASS**, 437 pass, 0 fail, 25 skipped (database tests run separately on disposable schemas), total 462.
+- `npm test` pada MySQL disposable: **PASS**, 480 pass, 0 fail, 7 skipped, total 487. Urutan `npm test` lalu `npm run test:integration` pada schema yang sama juga **PASS**, suite kedua 93/93.
 - `npm run test:integration` pada MySQL 8.4 disposable: **PASS**, 93 pass, 0 fail, 0 skip.
 - Migration tests: **PASS** — upgrade 001–020→021, migration 018 recovery, learning upgrade 011→021, publication migration 020, publication fence, dan legacy publication resolution; masing-masing satu skenario database.
 - Publication resolution MySQL: **PASS**, 10/10 (restart, concurrency, audit, account-switch blockers, no blind replay).
 - Browser E2E `npm run test:ndi:browser`: **PASS**, 3/3 pada Chromium lokal dan schema disposable; login, readiness gate, WCAG 2.2 AA, dan unknown recovery UI.
 - `npm run lint`, `npm run typecheck`, `npm run check`, `bash -n scripts/deploy-homelab.sh`, `git diff --check`: **PASS**.
 - `npm audit --audit-level=high`: **PASS**, 0 vulnerabilities. Compose validation dan Docker runtime build lokal: **PASS**.
-- Tidak ada provider nyata, publikasi Threads, aktivasi scheduler, atau database produksi dalam pengujian. GitHub CI belum berjalan; actionlint tidak tersedia.
+- Tidak ada provider nyata, publikasi Threads, aktivasi scheduler, atau database produksi dalam pengujian. PR run `44272321299` awal gagal di database integration (92/93); replay migration 006 menambahkan interval legacy yang berkonflik dan test meninggalkan CTA lama. Perbaikannya lolos urutan lokal yang sama; GitHub rerun menunggu push. `actionlint` tidak tersedia.
 - **GO untuk review PR** setelah final diff/SSOT review. **NO-GO merge/migration/deployment**: state DB/slot produksi belum diperiksa, rollback image/config memerlukan review dan prosedur operator, dan engine strategi kategori/gaya Fase B belum tersedia. Readiness gate menjaga automation tetap tertahan.
 
 ## Fase B — Mesin strategi konten (PR berikutnya, belum diimplementasikan)

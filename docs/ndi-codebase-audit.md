@@ -65,8 +65,8 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 
 | Pemeriksaan | Hasil lokal |
 |---|---|
-| `npm test` | PASS: 437 pass, 0 fail, 25 skip (462 total); skip adalah tes MySQL yang dijalankan terpisah pada schema disposable |
-| `npm run test:integration` dengan MySQL 8.4 disposable | PASS: 93 pass, 0 fail, 0 skip; termasuk auth/session, database integration, dispatcher, webhook, konfigurasi dan unknown/publish fence |
+| `npm test` pada MySQL disposable | PASS: 480 pass, 0 fail, 7 skip (487 total) |
+| Urutan CI `npm test` lalu `npm run test:integration` pada MySQL/schema yang sama | PASS lokal setelah perbaikan: test kedua 93/93; sebelum perbaikan PR run 44272321299 gagal 92/93 karena migration 006 menambahkan `intervalHours` di atas cadence kanonik dan test tidak mengisolasi state CTA/approval antar-run |
 | Migration 021 dan regressions MySQL terkait | PASS masing-masing: 021 upgrade 1; migration 018 1; learning upgrade 011→021 1; publication migration 020 1; publication fence 1; legacy publication resolution 1 |
 | Publication resolution MySQL 8.4 | PASS: `test/publication-resolution.mysql.integration.test.js`, 10 pass; rekonsiliasi, restart, concurrency, audit, account-switch blocker |
 | Browser E2E NDI | PASS: 3/3 dengan Chromium lokal dan MySQL disposable; login/readiness gate, WCAG 2.2 AA, label aktif dan panel unknown |
@@ -74,6 +74,6 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 | Docker image lokal | PASS: `docker build --target runtime --tag bot-ndi:ndi-phase-a-final .`; tidak menjalankan/deploy image |
 | Compose config | PASS: `docker compose config --quiet` dengan nilai test-only untuk variabel wajib; tidak mencetak config ter-resolved |
 | Dependency security audit | PASS: `npm audit --audit-level=high`, 0 vulnerabilities |
-| GitHub CI / actionlint | Belum berjalan; actionlint tidak tersedia lokal. CI menunggu push/PR; rollback produksi tetap perlu review operator |
+| GitHub CI / actionlint | PR run 44272321299: FAIL pada database integration; penyebab direproduksi dan diperbaiki lokal, urutan CI PASS lokal, GitHub rerun menunggu push. `actionlint` tidak tersedia; rollback produksi tetap perlu review operator |
 
 Semua database test menggunakan container MySQL disposable tanpa mount/volume dengan `/var/lib/mysql` di tmpfs; container dihentikan setelah tes. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Audit ini bukan bukti isi produksi, CI GitHub, atau persetujuan merge/deployment.

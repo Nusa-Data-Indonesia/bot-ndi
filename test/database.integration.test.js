@@ -83,9 +83,13 @@ test('MySQL login throttles are shared and bound concurrent attempts across auth
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
   const {randomBytes}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
-  const config=loadEnv();let pool=createPool(config);const priorAdminStates=[];const createdAdminIds=[];
+  const config=loadEnv();let pool=createPool(config);const priorAdminStates=[];const createdAdminIds=[];let settingsBeforeTest;
   try {
     await runMigrations(pool);
+    settingsBeforeTest=await snapshotBusinessSettings(pool);
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=FALSE,automation_enabled=FALSE WHERE id=1',[
+      JSON.stringify({schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[]}),JSON.stringify({}),JSON.stringify(DEFAULT_NDI_KNOWLEDGE),
+    ]);
     // This explicitly guarded disposable database shares its outbox across test runs.
     // Reset only this test queue so prior claims cannot change its FIFO assertion.
     await pool.execute('DELETE FROM notification_outbox');
@@ -103,10 +107,15 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.equal(settings.businessKnowledge.companyName,'Nusa Data Indonesia');assert.equal(settings.businessKnowledge.ctaUrl,'https://nusadataindonesia.com');assert.equal(settings.businessKnowledgeApproved,false);
     const savedHashtags=await repo.saveSettings({...settings,hashtags:['#NusaDataIndonesia','#DataTeknologi']},null);
     assert.deepEqual(savedHashtags.hashtags,['#NusaDataIndonesia','#DataTeknologi']);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='006_automation_sessions.sql'");
+    assert.deepEqual(await runMigrations(pool),['006_automation_sessions.sql']);
     const [[storedHashtagSettings]]=await pool.execute('SELECT settings_json, knowledge_json FROM settings WHERE id=1');
     const storedHashtagJson=typeof storedHashtagSettings.settings_json==='string'?storedHashtagSettings.settings_json:JSON.stringify(storedHashtagSettings.settings_json);
-    assert.deepEqual(JSON.parse(storedHashtagJson).hashtags,['#NusaDataIndonesia','#DataTeknologi']);
-    for(const key of ['brand','guardrails','gameWhitelist','priceMode','trackedLinks']) assert.equal(Object.hasOwn(JSON.parse(storedHashtagJson),key),false);
+    const migratedSettings=JSON.parse(storedHashtagJson);
+    assert.deepEqual(migratedSettings.hashtags,['#NusaDataIndonesia','#DataTeknologi']);
+    assert.equal(migratedSettings.schedule.intervalMinutes,settings.schedule.intervalMinutes,'replaying migration 006 preserves the canonical schedule interval');
+    assert.equal(Object.hasOwn(migratedSettings.schedule,'intervalHours'),false,'replaying migration 006 does not introduce a conflicting legacy interval');
+    for(const key of ['brand','guardrails','gameWhitelist','priceMode','trackedLinks']) assert.equal(Object.hasOwn(migratedSettings,key),false);
     const storedKnowledgeJson=typeof storedHashtagSettings.knowledge_json==='string'?storedHashtagSettings.knowledge_json:JSON.stringify(storedHashtagSettings.knowledge_json);
     assert.deepEqual(JSON.parse(storedKnowledgeJson),{});
     const approvedKnowledge=await repo.saveKnowledge({...settings.businessKnowledge,
@@ -422,6 +431,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       for(const id of createdAdminIds)await pool.execute('UPDATE admins SET active=0 WHERE id=?',[id]);
       for(const admin of priorAdminStates)await pool.execute('UPDATE admins SET active=? WHERE id=?',[admin.active?1:0,admin.id]);
       await pool.execute('DELETE FROM notification_outbox');
+      if(settingsBeforeTest)await restoreBusinessSettings(pool,settingsBeforeTest);
     }
     finally { await pool.end(); }
   }

@@ -103,7 +103,7 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 | T-17 | R-030 | B | NOT_YET_IMPLEMENTED | Binding category/style per slot belum dibuat; CTA/idempotency baseline A lulus. |
 | T-18 | R-032 | B | NOT_YET_IMPLEMENTED | Proposal/approval category belum dibuat; menunggu Fase B. |
 | T-19 | R-033, R-034 | B | NOT_YET_IMPLEMENTED | Proposal job belum dibuat dan tidak diaktifkan. |
-| T-20 | R-004, R-045–R-047, R-051, R-052, R-054 | A | PASS | `npm test`: 437 pass/0 fail/25 skip (462 total); `npm run test:integration`: 93 pass/0 fail/0 skip pada MySQL disposable. Scheduler, auth/session, dispatcher, provider mock, retries, unknown, notifications dan konfigurasi diregresikan; readiness production tetap menahan posting sampai B. |
+| T-20 | R-004, R-045–R-047, R-051, R-052, R-054 | A | PASS | Pada MySQL disposable: `npm test` 480 pass/0 fail/7 skip (487 total), lalu `npm run test:integration` 93/93 lulus pada schema yang sama. Scheduler, auth/session, dispatcher, provider mock, retries, unknown, notifications, konfigurasi, dan repeatability suite diregresikan; readiness production tetap menahan posting sampai B. |
 | T-21 | R-048, R-050, R-052, R-053 | A | PASS | `test/publication-resolution.mysql.integration.test.js`: 10/10 PASS; restart, concurrency, audit, account-switch blockers, no blind replay. |
 | T-22 | R-049, R-050, R-071 | A/B/C | PASS | Unit/route/auth/CSRF UI tests dan `npm run test:ndi:browser`: 3/3 lulus pada MySQL disposable/Chromium lokal; UI menunjukkan waktu, error/status, target asal dan recovery aman. |
 | T-23 | R-019, R-057 | C | NOT_YET_IMPLEMENTED | Sync website tidak dibuat; tidak ada fetch route/job. |
@@ -113,20 +113,21 @@ Fase yang dikerjakan: A. Fase B/C memang belum diimplementasikan. Status memakai
 | T-27 | R-062 | C | NOT_YET_IMPLEMENTED | Website failure path belum dibuat karena sync belum ada. |
 | T-28 | R-037, R-058 | C | NOT_YET_IMPLEMENTED | Origin sinkronisasi website yang tetap dan alur sync belum dibuat; pemisahan CTA bebas dari dashboard telah diuji T-07. |
 | T-29 | R-008, R-073 | A | PASS | Trusted proxy test membatasi `TRUST_PROXY`; secret redaction/config tests; tidak ada credential production yang dibaca. |
-| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose, Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus; GitHub CI belum berjalan, `actionlint` tidak tersedia, dan perubahan migrasi 021 memerlukan jalur deployment manual yang ditinjau operator. |
+| T-30 | R-001, R-002, R-006, R-007, R-068 | A | BLOCKED | Compose (HOST_IP test-only), Docker build, deploy shell, lint/typecheck/check dan workflow contract test lokal lulus. PR #3 run `44272321299` awal FAIL pada database integration 92/93; perbaikan replay migration 006 dan isolasi test kini PASS pada urutan lokal yang sama, GitHub rerun menunggu push. `actionlint` tidak tersedia; migration 021 memerlukan jalur deployment manual yang ditinjau operator. |
 
 ## Hasil verifikasi lokal terakhir
 
-- `npm test`: **PASS**, 437 pass, 0 fail, 25 skipped (tes MySQL yang secara sengaja memerlukan schema disposable terisolasi), 462 total.
+- `npm test` pada MySQL disposable: **PASS**, 480 pass, 0 fail, 7 skipped, 487 total.
 - `npm run test:integration`: **PASS**, 93 pass, 0 fail, 0 skip pada MySQL 8.4 disposable.
+- Urutan `npm test` lalu `npm run test:integration` pada schema sama: **PASS**; test integration kedua 93/93.
 - `test/ndi-migration.mysql.integration.test.js`: **PASS**, 1 test; migrasi 001–020→021, rerun, data/config/admin/session/fakta/slot/status terjaga.
 - `test/publication-resolution.mysql.integration.test.js`: **PASS**, 10 tests; restart, concurrency, audit, account switch dan tanpa blind replay.
 - Migration regression tambahan: **PASS** masing-masing 1 test untuk migration 018, learning upgrade 011→021, migration publication 020, publication fence, dan legacy publication resolution.
 - Browser E2E `npm run test:ndi:browser`: **PASS**, 3 tests pada Chromium lokal; login/readiness, aksesibilitas WCAG 2.2 AA, label NDI, dan review slot `unknown`.
-- `npm run lint`, `npm run typecheck`, `npm run check`, `bash -n scripts/deploy-homelab.sh`, dan `git diff --check`: **PASS**.
+- `npm run lint`, `npm run typecheck`, `npm run check`, `bash -n scripts/deploy-homelab.sh`, `docker compose config --quiet` (HOST_IP test-only), `docker build --target runtime`, dan `git diff --check`: **PASS**.
 - `npm audit --audit-level=high`: **PASS**, 0 vulnerabilities.
 - `docker compose config --quiet` dengan variabel test-only dan `docker build --target runtime --tag bot-ndi:ndi-phase-a-final .`: **PASS**.
-- Tidak ada GitHub Actions run, actionlint tidak tersedia, dan tidak ada tes provider nyata/Threads. Bukti lokal bukan bukti database produksi atau kompatibilitas rollback produksi.
+- GitHub Actions PR run `44272321299`: **FAIL**, 92/93 pada database integration; lokal sudah mereproduksi, memperbaiki, dan mengulang urutan dengan **PASS**, GitHub rerun menunggu push. `actionlint` tidak tersedia. Tidak ada tes provider nyata/Threads; bukti lokal bukan bukti database produksi atau kompatibilitas rollback produksi.
 
 ### Coverage saat ini
 
