@@ -15,7 +15,7 @@ function json(value) {
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
 
-test('021–022 upgrade legacy state additively, seed strategy once, and keep posting gated until explicit admin review', { skip: !enabled }, async () => {
+test('021–023 upgrade legacy state additively, seed strategy once, and keep posting gated until explicit admin review', { skip: !enabled }, async () => {
   const { loadEnv } = require('../src/config');
   const { createPool } = require('../src/db');
   const { runMigrations } = require('../src/migrate');
@@ -78,6 +78,12 @@ test('021–022 upgrade legacy state additively, seed strategy once, and keep po
     await fs.copyFile(path.join(sourceDir, '022_content_strategy.sql'), path.join(migrationDir, '022_content_strategy.sql'));
     assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), ['022_content_strategy.sql']);
     assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), [], 'migration runner must record 022 once');
+
+    await fs.copyFile(path.join(sourceDir, '023_manual_website_knowledge_sync.sql'), path.join(migrationDir, '023_manual_website_knowledge_sync.sql'));
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), ['023_manual_website_knowledge_sync.sql']);
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), [], 'migration runner must record 023 once');
+    const [[initialKnowledgeVersion]] = await pool.execute('SELECT business_knowledge_version FROM settings WHERE id=1');
+    assert.equal(Number(initialKnowledgeVersion.business_knowledge_version), 1, 'existing approved knowledge gets a stable initial version');
 
     const migrationSql = await fs.readFile(path.join(sourceDir, '021_ndi_business_knowledge.sql'), 'utf8');
     for (const statement of migrationSql.split(';').map((part) => part.trim()).filter(Boolean)) await pool.query(statement);
@@ -206,6 +212,70 @@ test('021–022 upgrade legacy state additively, seed strategy once, and keep po
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:04:00.000Z'), categoryA.id, new Date('2026-11-18T10:00:00.000Z')]);
     assert.equal((await repository.getRuntimeState()).contentStrategy.orderUncertain, true, 'timestamp ties across categories block further rotation');
 
+    const webRun = await repository.startWebsiteSyncRun(adminId);
+    assert.equal(webRun.knowledgeVersion, 2, 'manual approval of existing knowledge incremented its version');
+    const webFetchedAt = new Date('2026-11-18T12:00:00.000Z');
+    await repository.completeWebsiteSyncRun({
+      id: webRun.id, knowledgeVersion: webRun.knowledgeVersion, sourceUrl: 'https://nusadataindonesia.com/',
+      sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, completedAt: webFetchedAt,
+      proposals: [
+        { operation: 'add', targetValue: 'Integrasi API', baseValue: null, sourceUrl: 'https://nusadataindonesia.com/', sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, knowledgeVersion: webRun.knowledgeVersion },
+        { operation: 'add', targetValue: 'Dashboard BI', baseValue: null, sourceUrl: 'https://nusadataindonesia.com/', sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, knowledgeVersion: webRun.knowledgeVersion },
+        { operation: 'remove', targetValue: 'Pengembangan perangkat lunak kustom', baseValue: 'Pengembangan perangkat lunak kustom', sourceUrl: 'https://nusadataindonesia.com/', sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, knowledgeVersion: webRun.knowledgeVersion },
+      ],
+    });
+    let websiteState = await repository.getWebsiteSyncState();
+    const pendingWebsiteProposals = websiteState.proposals.filter((item) => item.syncRunId === webRun.id);
+    assert.equal(pendingWebsiteProposals.length, 3);
+    assert.ok(pendingWebsiteProposals.every((item) => item.status === 'pending' && item.sourceUrl === 'https://nusadataindonesia.com/'));
+    const beforeWebsiteReview = await repository.getSettings();
+    await repository.reviewWebsiteKnowledgeProposal(pendingWebsiteProposals.find((item) => item.targetValue === 'Dashboard BI').id, 'reject', adminId);
+    assert.deepEqual((await repository.getSettings()).businessKnowledge, beforeWebsiteReview.businessKnowledge, 'rejecting one proposal changes no authoritative knowledge');
+    const addProposal = pendingWebsiteProposals.find((item) => item.targetValue === 'Integrasi API');
+    const removeProposal = pendingWebsiteProposals.find((item) => item.operation === 'remove');
+    await repository.reviewWebsiteKnowledgeProposal(addProposal.id, 'approve', adminId);
+    let websiteKnowledge = await repository.getSettings();
+    assert.ok(websiteKnowledge.businessKnowledge.services.includes('Integrasi API'));
+    assert.equal(websiteKnowledge.businessKnowledgeVersion, 3);
+    await repository.reviewWebsiteKnowledgeProposal(removeProposal.id, 'approve', adminId);
+    websiteKnowledge = await repository.getSettings();
+    assert.ok(!websiteKnowledge.businessKnowledge.services.includes('Pengembangan perangkat lunak kustom'));
+    assert.equal(websiteKnowledge.businessKnowledgeVersion, 4);
+
+    const staleRun = await repository.startWebsiteSyncRun(adminId);
+    await repository.completeWebsiteSyncRun({
+      id: staleRun.id, knowledgeVersion: staleRun.knowledgeVersion, sourceUrl: 'https://nusadataindonesia.com/',
+      sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, completedAt: webFetchedAt,
+      proposals: [{ operation: 'remove', targetValue: 'Dashboard', baseValue: 'Dashboard', sourceUrl: 'https://nusadataindonesia.com/', sourceTitle: 'Nusa Data Indonesia', fetchedAt: webFetchedAt, knowledgeVersion: staleRun.knowledgeVersion }],
+    });
+    const staleProposal = (await repository.getWebsiteSyncState()).proposals.find((item) => item.syncRunId === staleRun.id);
+    const manuallyEditedKnowledge = { ...websiteKnowledge.businessKnowledge, services: websiteKnowledge.businessKnowledge.services.filter((service) => service !== 'Dashboard') };
+    await repository.saveKnowledge(manuallyEditedKnowledge, adminId);
+    const beforeConflictReview = await repository.getSettings();
+    const staleReview = await repository.reviewWebsiteKnowledgeProposal(staleProposal.id, 'approve', adminId);
+    assert.equal(staleReview.status, 'conflict', 'manual edits after sync produce a conflict instead of overwrite');
+    assert.deepEqual((await repository.getSettings()).businessKnowledge, beforeConflictReview.businessKnowledge);
+    assert.ok((await repository.getWebsiteSyncState()).proposals.find((item) => item.id === staleProposal.id).status === 'conflict');
+
+    const failedRun = await repository.startWebsiteSyncRun(adminId);
+    const beforeFailedFetch = await repository.getSettings();
+    await repository.failWebsiteSyncRun({ id: failedRun.id, errorCode: 'WEBSITE_SYNC_TIMEOUT', failedAt: webFetchedAt });
+    const afterFailedFetch = await repository.getSettings();
+    assert.deepEqual(afterFailedFetch.businessKnowledge, beforeFailedFetch.businessKnowledge, 'fetch failure leaves approved knowledge untouched');
+    assert.equal(afterFailedFetch.businessKnowledgeVersion, beforeFailedFetch.businessKnowledgeVersion);
+    assert.equal(afterFailedFetch.automationEnabled, beforeFailedFetch.automationEnabled, 'website failure does not affect posting controls');
+    const failedRecord = (await repository.getWebsiteSyncState()).runs.find((item) => item.id === failedRun.id);
+    assert.equal(failedRecord.status, 'failed');
+    assert.equal(failedRecord.errorCode, 'WEBSITE_SYNC_TIMEOUT');
+    const [websiteAudit] = await pool.execute(`SELECT action,admin_id,details_json FROM audit_logs
+      WHERE action LIKE 'ndi_website_sync.%' ORDER BY id`);
+    const websiteAuditActions = websiteAudit.map((item) => item.action);
+    for (const action of [
+      'ndi_website_sync.requested', 'ndi_website_sync.completed', 'ndi_website_sync.failed',
+      'ndi_website_sync.proposal.approved', 'ndi_website_sync.proposal.rejected', 'ndi_website_sync.proposal.conflict',
+    ]) assert.ok(websiteAuditActions.includes(action), `audit records ${action}`);
+    assert.ok(websiteAudit.every((item) => Number(item.admin_id) === adminId), 'sync and review audit entries retain the admin actor');
+    assert.ok(websiteAudit.some((item) => json(item.details_json).sourceUrl === 'https://nusadataindonesia.com/'), 'audit retains official-site provenance');
   } finally {
     await pool.end();
     await fs.rm(migrationDir, { recursive: true, force: true });

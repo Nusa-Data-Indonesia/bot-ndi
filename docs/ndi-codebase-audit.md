@@ -1,7 +1,7 @@
 # Audit Codebase Bot NDI
 
 Tanggal: 2026-11-18
-Branch kerja: `codex/ndi-phase-b` hanya berisi Fase B; Fase C belum diimplementasikan dan direncanakan sebagai branch bertingkat berikutnya. Baseline: PR #3 / `codex/ndi-phase-a` (`153da83`).
+Branch kerja: `codex/ndi-phase-b` berisi Fase B; Fase C dipisahkan sebagai branch bertingkat. Baseline: PR #3 / `codex/ndi-phase-a` (`153da83`).
 SSOT: `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`, 377 baris; seluruh baris dibaca ulang dalam rentang berurutan 1–130, 131–260, dan 261–377.
 
 ## Cakupan dan batas bukti
@@ -12,7 +12,7 @@ Audit menelusuri alur startup, konfigurasi efektif, generator, database/reposito
 
 Tidak ada koneksi ke database, `.env`, LXC, provider, scheduler produksi, GitHub Actions produksi, atau aplikasi/infrastruktur BotMerzz terpisah. Isi aktual database, `automation_enabled`, konfigurasi akun, serta slot produksi `ready/publishing/unknown` tetap tidak diketahui. Bukti migrasi berasal dari MySQL 8.4 disposable tanpa volume, bukan salinan data produksi.
 
-`origin/main` yang diaudit menjalankan workflow deploy otomatis setelah CI push ke `main` sukses, serta workflow manual untuk operasi terkontrol/rollback. Script deployment memblokir jalur otomatis bila migration atau startup-execution surface berubah dan mengarahkan perubahan tersebut ke jalur manual yang memerlukan review operator. Fase A menambahkan migrasi 021 dan branch Fase B menambahkan 022. Fase C/migrasi 023 belum ada pada branch ini. Jalur auto-deploy menahan perubahan migration/startup surface; merge tetap NO-GO tanpa persetujuan operator dan prosedur deployment/rollback yang ditinjau.
+`origin/main` yang diaudit menjalankan workflow deploy otomatis setelah CI push ke `main` sukses, serta workflow manual untuk operasi terkontrol/rollback. Script deployment memblokir jalur otomatis bila migration atau startup-execution surface berubah dan mengarahkan perubahan tersebut ke jalur manual yang memerlukan review operator. Fase A menambahkan migrasi 021 dan Fase B/C menambahkan 022/023, sehingga setiap branch mengubah schema. Jalur auto-deploy menahan perubahan migration/startup surface; merge tetap NO-GO tanpa persetujuan operator dan prosedur deployment/rollback yang ditinjau.
 
 ## Arsitektur dan alur runtime
 
@@ -25,7 +25,8 @@ Tidak ada koneksi ke database, `.env`, LXC, provider, scheduler produksi, GitHub
 7. Tebar webhook/status dan resolusi manual memperbarui slot melalui transaksi/audit; notifikasi Telegram menggunakan bahasa NDI. Provider test memakai mock.
 8. Migration 022 menambah 8 default category dan 7 style secara idempotent. `src/content-strategy.js` memilih category/style uniform dan independen. Repository mengikat JSON/IDs ke slot secara transaksional dan mengurutkan rotation hanya dari target Threads `published_at` provider-confirmed. Data kosong, timestamp hilang, atau timestamp seri menahan publish.
 9. Proposal kategori AI memakai worker/scheduler terpisah dari publishing, default OFF, interval 30–365 hari, dan satu request maksimal 400 token. Kegagalan dicatat tanpa masuk ke siklus dispatch; kategori tetap pending sampai keputusan admin.
-10. Website knowledge sync belum didaftarkan ke server atau dashboard. R-057–R-063 dan pengamanan fetch terkait termasuk Fase C dan tidak berada pada runtime branch B.
+10. Manual website sync diekspos sebagai GET status dan POST eksplisit admin pada `/api/website-sync`; website tidak memiliki crawler/job otomatis. Origin dikunci ke `https://nusadataindonesia.com/`. Fetch DNS IPv4 publik dipin ke HTTPS, redirects ditolak, timeout/body/content-type dibatasi, dan parser hanya menyimpan usulan layanan sebagai teks tidak tepercaya.
+11. Website changes disimpan per-item dengan source title/URL, fetch time, knowledge version, nilai dasar/target dan audit. Approval membandingkan versi; konflik tidak menulis fakta baru. Failed fetch/parse mencatat kegagalan tanpa perubahan knowledge aktif.
 
 ## Inventaris legacy dan tindakan Fase A
 
@@ -58,24 +59,24 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 ## Keamanan, integrasi, retry, unknown, dan rollback
 
 - API knowledge/settings berada di middleware autentikasi, same-origin, CSRF, validasi input, dan audit admin yang sudah ada. Endpoint tulis fakta lama mengembalikan `410 LEGACY_FACTS_ARCHIVED`; route template/learning lama tidak didaftarkan.
-- CTA menerima HTTPS valid ke hostname mana pun, menolak credentials/control characters/encoding berbahaya, dan tidak di-fetch. Domain dashboard tetap terpisah dari CTA. Website sync belum tersedia pada branch B; tidak ada URL dari business knowledge yang di-fetch.
+- CTA menerima HTTPS valid ke hostname mana pun, menolak credentials/control characters/encoding berbahaya, dan tidak di-fetch. Domain dashboard tetap terpisah dari CTA. Website sync hanya berjalan pada POST admin terautentikasi di origin resmi tetap; hasilnya usulan per-item dan tidak mengubah knowledge sebelum review. Resolver mengharuskan semua jawaban DNS IPv4 lolos allow policy lalu mem-pin satu alamat, memverifikasi hostname TLS, dan menolak redirect. Daftar blokir konservatif juga menolak sebagian ruang `192.0.0.0/24` yang memiliki pengecualian reachable; akibatnya beberapa origin publik dapat ditolak (false negative), tetapi tidak dibuka ke alamat private.
 - `TRUST_PROXY`, cookie session, login throttle, admin audit, Tebar webhook HMAC/deduplikasi, OpenRouter, Tebar, Telegram, idempotency, cadence, retry, dan manual unknown reconciliation tidak diganti.
-- Migrations 021–022 additive/restartable pada MySQL 8.4: 021 menambah knowledge/arsip/CTA snapshot dan 022 strategy/proposal/style snapshots/provider timestamps; tidak ada DROP/DELETE/TRUNCATE. MySQL DDL dapat implicit commit. Disposable test menerapkan legacy 001–020, menanam fixtures sanitized, upgrade ke 022, rerun migration, lalu memeriksa data, state dan review gates. Facts/slots/settings/sessions/integration config/audit tetap dipertahankan. Website sync/migration 023 belum menjadi bagian branch B.
+- Migrations 021–023 additive/restartable pada MySQL 8.4: 021 menambah knowledge/arsip/CTA snapshot, 022 strategy/proposal/style snapshots/provider timestamps, dan 023 website-sync run/proposal versioning; tidak ada DROP/DELETE/TRUNCATE. MySQL DDL dapat implicit commit. Disposable test menerapkan legacy 001–020, menanam fixtures sanitized, upgrade ke 023, rerun migration, lalu memeriksa data, state dan review gates. Facts/slots/settings/sessions/integration config/audit tetap dipertahankan.
 - Rollback image bukan rollback data. Versi lama tidak memahami kolom knowledge baru; versi baru mengarsipkan dan menghapus key lama dari settings aktif serta mengosongkan `knowledge_json`, sementara fakta legacy tetap utuh. Restore nilai aktif lama dari kolom arsip memerlukan prosedur operator yang diuji. Karena itu kompatibilitas semantik rollback belum dibuktikan hanya dari adanya kolom additive. Perlakukan ini sebagai risiko review operator; jangan merge/deploy sampai strategi rollback/slot produksi disetujui.
 - State database produksi, slot `publishing/unknown`, dan apakah ada scheduler aktif tidak dapat dipastikan dari repository. Deployment harus meninjau state efektif dan menjadwalkan approval ulang knowledge; migration tidak mengubah `automation_enabled` dan posting tertahan oleh knowledge yang belum disetujui.
 
-## Bukti pengujian tree Phase B-only
+## Bukti pengujian saat audit akhir
 
 | Pemeriksaan | Hasil lokal |
 |---|---|
-| Full unit/integration suite | PASS: `npm test` 475 total, 450 pass, 0 fail, 25 skip |
-| Deployment shell suite | PASS dalam `npm test`; deploy harness memakai filesystem scratch dan tidak mengubah deployment aktif |
+| Full unit/integration suite | PASS: `npm test` 485 total, 460 pass, 0 fail, 25 skip |
+| Deployment shell suite | PASS: 30/30 pada sandbox tanpa network; semua filesystem output dibatasi ke scratch |
 | `npm run test:integration` | PASS: 94/94 pada MySQL disposable; MySQL configuration check terpisah PASS 1/1 |
-| Migrations 021–022 | PASS: `test/ndi-migration.mysql.integration.test.js` 1/1 pada MySQL disposable; website proposal/version test adalah Fase C dan belum tersedia di branch B |
+| Migrations 021–023 | PASS: `test/ndi-migration.mysql.integration.test.js` 1/1 on disposable MySQL; upgrade/rerun, legacy state, strategy gate, website proposal/version/audit/conflict |
 | Publication resolution MySQL | PASS: 10/10; restart, concurrency, audit, account-switch blockers, no blind replay |
 | Lint/typecheck/check/Compose | PASS: `npm run lint`, `npm run typecheck`, `npm run check`, Compose config dengan env test-only |
-| Browser E2E NDI | PASS: 3/3 dengan Chromium lokal dan MySQL disposable pada loopback; scheduler/provider integrations OFF |
-| Docker image build | PASS: `docker build -t bot-ndi-phase-b-verify .` memakai Dockerfile production; image hanya dibuat lokal |
-| Compose / GitHub CI | Compose config PASS dengan env test-only. Pengguna menyetujui trigger push `main` serta branch B/C; pull-request filter tetap `main`, dan deployment workflow tetap hanya menerima CI sukses pada `main`. PR #4 run `44317203508` dan PR #5 run `44318008837` PASS pada SHA yang tercatat di checkpoint. Ada peringatan Node 20 untuk action yang dipin dan notice migrasi `ubuntu-latest`, keduanya non-blocking. `actionlint` tidak tersedia. |
+| Browser E2E NDI | PASS: 4/4 dengan Chromium lokal dan MySQL disposable pada loopback; scheduler/provider integrations OFF |
+| Docker image build | PASS: production Dockerfile built as local verification tag `bot-ndi-phase-c-verify` |
+| Compose / GitHub CI | Compose config PASS dengan env test-only. Phase B/C GitHub CI menunggu PR runs; `actionlint` tidak tersedia. PR #3 Phase A run `44277798887` PASS, bukan bukti untuk branch ini. |
 
-Semua DB tests menggunakan database disposable dan tidak memakai volume produksi. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Isi production DB dan rollback tetap tidak diketahui. Website sync dan migration 023 ada pada PR C #5. Checks CI final yang tercatat lulus; merge/deployment tetap NO-GO sampai review operator R-055/R-068 dan persetujuan merge terpisah tersedia.
+Semua DB tests menggunakan database disposable dan tidak memakai volume produksi. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Isi production DB dan rollback tetap tidak diketahui. Merge/deployment NO-GO sampai CI branch serta review operator R-055/R-068 selesai.

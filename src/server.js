@@ -13,13 +13,16 @@ const { registerWebhookRoutes } = require('./http/routes/webhooks');
 const { registerIntegrationRoutes } = require('./http/routes/integrations');
 const { registerPublicationResolutionRoutes } = require('./http/routes/publication-resolution');
 const { registerContentStrategyRoutes } = require('./http/routes/content-strategy');
+const { registerWebsiteSyncRoutes } = require('./http/routes/website-sync');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
   'EXTERNAL_INTEGRATIONS_DISABLED',
   'PUBLICATION_VERIFICATION_UNAVAILABLE', 'PUBLICATION_RECONCILIATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
   'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
-
+  'WEBSITE_SYNC_DNS_FAILED', 'WEBSITE_SYNC_UNSAFE_DNS', 'WEBSITE_SYNC_TIMEOUT', 'WEBSITE_SYNC_FETCH_FAILED',
+  'WEBSITE_SYNC_REDIRECT_REJECTED', 'WEBSITE_SYNC_CONTENT_TYPE_REJECTED', 'WEBSITE_SYNC_RESPONSE_TOO_LARGE',
+  'WEBSITE_SYNC_PARSE_FAILED', 'WEBSITE_SYNC_SERVICE_LIST_NOT_FOUND', 'WEBSITE_SYNC_FAILED',
 ]);
 
 /**
@@ -97,6 +100,7 @@ function createServer({ config, repository, auth, services = {} } = {}) {
   registerPublicationResolutionRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerIntegrationRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerContentStrategyRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerWebsiteSyncRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerDashboardRoutes(app, {
     repository,
     services,

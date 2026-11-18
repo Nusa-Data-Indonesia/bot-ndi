@@ -144,6 +144,17 @@
     CONTENT_STRATEGY_NOT_FOUND: 'Kategori atau gaya tidak ditemukan atau sudah diarsipkan.',
     INVALID_PROPOSAL_SETTINGS: 'Interval usulan harus antara 30 dan 365 hari.', CATEGORY_PROPOSAL_ALREADY_REVIEWED: 'Usulan sudah ditinjau.',
     BUSINESS_KNOWLEDGE_REVIEW_REQUIRED: 'Simpan dan setujui pengetahuan bisnis NDI sebelum mengaktifkan otomasi.',
+    WEBSITE_SYNC_UNAVAILABLE: 'Sinkronisasi website belum tersedia di server.',
+    WEBSITE_SYNC_DNS_FAILED: 'Domain resmi belum dapat diperiksa. Periksa koneksi server lalu coba lagi.',
+    WEBSITE_SYNC_UNSAFE_DNS: 'Alamat website resmi tidak lolos pemeriksaan keamanan. Sinkronisasi dihentikan.',
+    WEBSITE_SYNC_TIMEOUT: 'Website resmi tidak merespons dalam batas waktu. Tidak ada pengetahuan yang diubah.',
+    WEBSITE_SYNC_FETCH_FAILED: 'Halaman resmi belum dapat diambil. Periksa kembali nanti.',
+    WEBSITE_SYNC_REDIRECT_REJECTED: 'Website mengalihkan permintaan. Pengalihan ditolak demi keamanan.',
+    WEBSITE_SYNC_CONTENT_TYPE_REJECTED: 'Website tidak mengembalikan halaman HTML yang diharapkan.',
+    WEBSITE_SYNC_RESPONSE_TOO_LARGE: 'Halaman website melebihi batas ukuran aman.',
+    WEBSITE_SYNC_PARSE_FAILED: 'Halaman website tidak dapat dibaca dengan aman.',
+    WEBSITE_SYNC_SERVICE_LIST_NOT_FOUND: 'Daftar layanan terstruktur tidak ditemukan. Pengetahuan tetap tidak berubah.',
+    WEBSITE_SYNC_CONFLICT: 'Pengetahuan berubah setelah usulan dibuat. Periksa ulang fakta dan minta sinkronisasi baru.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
     CONFIG_CONFLICT: 'Konfigurasi sudah berubah. Muat ulang konfigurasi dan periksa lagi; isian Anda tetap tersimpan di form.',
     INVALID_ACCOUNT: 'Profile ID atau Account ID tidak valid. Periksa kedua isian.',
@@ -259,6 +270,12 @@
     publication_close_unverified: 'Slot ditutup admin tanpa verifikasi',
     publication_link_provider_post: 'ID post Tebar dikaitkan oleh admin',
     provider_hold_created: 'Akses provider perlu diperiksa',
+    'ndi_website_sync.requested': 'Admin meminta sinkronisasi Website NDI',
+    'ndi_website_sync.completed': 'Sinkronisasi Website NDI selesai; usulan menunggu tinjauan',
+    'ndi_website_sync.failed': 'Sinkronisasi Website NDI gagal',
+    'ndi_website_sync.proposal.approved': 'Usulan website disetujui ke pengetahuan bisnis',
+    'ndi_website_sync.proposal.rejected': 'Usulan website ditolak oleh admin',
+    'ndi_website_sync.proposal.conflict': 'Usulan website menjadi konflik versi',
   };
   function addPasswordToggle(input) {
     if (!input?.parentNode || input.dataset.visibilityToggle === 'ready') return;
@@ -513,6 +530,7 @@
     if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (name === 'integrations' || name === 'ai') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
     if (name === 'strategy') api('/api/content-strategy').then(renderContentStrategy).catch((error) => show('#global-error', errorText(error)));
+    if (name === 'content') loadWebsiteSync().catch((error) => show('#global-error', errorText(error)));
   }
   syncSidebarViewport();
   sidebarViewport.addEventListener?.('change', syncSidebarViewport);
@@ -761,6 +779,53 @@
     return time && Number.isFinite(time.getTime())
       ? time.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', timeZoneName: 'short' })
       : 'Tidak tersedia';
+  }
+
+  function renderWebsiteSync(data = {}) {
+    const status = $('#website-sync-status');
+    const proposalsTarget = $('#website-sync-proposals');
+    const runsTarget = $('#website-sync-runs');
+    const proposals = Array.isArray(data.proposals) ? data.proposals : [];
+    const runs = Array.isArray(data.runs) ? data.runs : [];
+    const pending = proposals.filter((proposal) => proposal.status === 'pending').length;
+    status.className = pending ? 'notice warning' : 'notice info';
+    status.textContent = `Versi pengetahuan ${Number(data.knowledgeVersion) || 1}. ${pending ? `${pending} perubahan menunggu keputusan per item.` : 'Tidak ada perubahan yang menunggu keputusan.'} Sinkronisasi hanya berjalan saat tombol ditekan.`;
+    proposalsTarget.replaceChildren(...proposals.map((proposal) => {
+      const card = publicationNode('article', undefined, 'integration-history-item stack');
+      const operation = ({ add: 'Usulan penambahan layanan', edit: 'Usulan perubahan layanan', remove: 'Usulan penghapusan layanan' })[proposal.operation] || 'Usulan layanan';
+      const stateLabel = ({ pending: 'Menunggu tinjauan', approved: 'Disetujui', rejected: 'Ditolak', conflict: 'Konflik versi' })[proposal.status] || 'Status tidak diketahui';
+      card.append(publicationNode('h3', operation), publicationNode('strong', proposal.targetValue || 'Nilai usulan tidak tersedia'));
+      if (proposal.baseValue) card.append(publicationNode('p', `Nilai saat ini: ${proposal.baseValue}`, 'publication-text'));
+      card.append(publicationNode('p', `${stateLabel} · versi pengetahuan ${Number(proposal.knowledgeVersion) || 1}${proposal.conflictCode ? ` · ${proposal.conflictCode}` : ''}`));
+      const link = document.createElement('a'); link.href = 'https://nusadataindonesia.com/'; link.textContent = 'Sumber resmi: nusadataindonesia.com'; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      card.append(link, publicationNode('p', `${proposal.sourceTitle || 'Website Resmi NDI'} · ${publicationDate(proposal.fetchedAt)}`, 'muted'));
+      if (proposal.status === 'pending') {
+        const actions = publicationNode('div', undefined, 'form-actions');
+        for (const [decision, label, className] of [['approve', 'Setujui perubahan ini', 'button primary'], ['reject', 'Tolak perubahan ini', 'button quiet']]) {
+          const button = publicationNode('button', label, className);
+          button.type = 'button'; button.dataset.websiteProposalId = proposal.id; button.dataset.decision = decision;
+          actions.append(button);
+        }
+        card.append(actions);
+      }
+      return card;
+    }));
+    if (!proposals.length) proposalsTarget.replaceChildren(publicationNode('p', 'Belum ada usulan sinkronisasi. Tekan tombol untuk mengambil halaman resmi dan membandingkan daftar layanan.', 'muted'));
+    runsTarget.replaceChildren(...runs.map((run) => {
+      const entry = publicationNode('article', undefined, 'integration-history-item');
+      const result = run.status === 'completed' ? `${Number(run.proposalCount) || 0} usulan dibuat` : run.status === 'failed' ? `Gagal (${run.errorCode || 'WEBSITE_SYNC_FAILED'})` : 'Sedang diproses';
+      entry.append(publicationNode('strong', `${publicationDate(run.createdAt)} · ${result}`), publicationNode('p', `Sumber tetap: nusadataindonesia.com · versi ${Number(run.knowledgeVersion) || 1}`, 'muted'));
+      return entry;
+    }));
+    if (!runs.length) runsTarget.replaceChildren(publicationNode('p', 'Belum ada riwayat permintaan.', 'muted'));
+  }
+
+  async function loadWebsiteSync() {
+    const target = $('#website-sync-proposals');
+    target.replaceChildren(publicationNode('p', 'Memuat usulan sinkronisasi…', 'muted'));
+    const data = await api('/api/website-sync');
+    renderWebsiteSync(data);
+    return data;
   }
 
   function renderProviderHolds(holds = [], configuration = {}) {
@@ -1571,6 +1636,29 @@
         show('#global-success', 'Pengetahuan bisnis NDI disimpan dan disetujui untuk digunakan generator konten.'); await refreshAfterMutation(refresh);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
+  });
+
+  $('#website-sync-button').addEventListener('click', async (event) => {
+    await withPending(event.currentTarget, async () => {
+      try {
+        const result = await api('/api/website-sync', { method: 'POST', body: '{}' });
+        notify('success', `${Number(result.proposalCount) || 0} usulan perubahan website siap ditinjau.`);
+        await loadWebsiteSync();
+      } catch (error) { show('#global-error', errorText(error)); }
+    }, 'Memeriksa website…');
+  });
+  $('#website-sync-proposals').addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-website-proposal-id]'); if (!button) return;
+    const decision = button.dataset.decision;
+    if (decision === 'approve' && !confirmAction('Setujui hanya perubahan layanan ini ke pengetahuan bisnis aktif?')) return;
+    await withPending(button, async () => {
+      try {
+        const result = await api(`/api/website-sync/proposals/${encodeURIComponent(button.dataset.websiteProposalId)}/${decision}`, { method: 'POST', body: '{}' });
+        if (result.status === 'conflict') show('#global-error', 'Usulan berubah menjadi konflik karena pengetahuan terbaru berbeda. Periksa kembali fakta sebelum menyinkronkan ulang.');
+        else notify('success', decision === 'approve' ? 'Perubahan layanan ini disetujui.' : 'Perubahan layanan ini ditolak.');
+        await loadWebsiteSync(); await refreshAfterMutation(refresh);
+      } catch (error) { show('#global-error', errorText(error)); await loadWebsiteSync().catch(() => {}); }
+    }, 'Menyimpan keputusan…');
   });
 
   async function saveStrategyForm(form, kind, id = null) {

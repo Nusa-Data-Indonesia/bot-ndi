@@ -27,6 +27,9 @@ test('CLI startup and manual dispatch stay inert with populated credentials unti
   const pool = { end: async () => { observed.poolEnds++; }, execute: async () => [[]] };
   const repository = {
     setAutomationEnabled: async () => ({ changed: false }),
+    startWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
+    completeWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
+    failWebsiteSyncRun: async () => { throw new Error('manual website sync must not run during startup'); },
     claimCategoryProposalRun: async () => { throw new Error('disabled category proposal job must not run during startup'); },
     finishCategoryProposalRun: async () => { throw new Error('disabled category proposal job must not run during startup'); },
   };

@@ -43,6 +43,7 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
         settings: state.settings || {},
         businessKnowledge: state.businessKnowledge || null,
         businessKnowledgeApproved: state.businessKnowledgeApproved === true,
+        businessKnowledgeVersion: Number(state.businessKnowledgeVersion || 1),
         contentStrategy,
         posts,
         activity: recentActivity,

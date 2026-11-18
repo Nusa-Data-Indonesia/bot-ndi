@@ -213,6 +213,7 @@ async function main(argv = process.argv.slice(2)) {
     services.configurationValidators = require('./configuration-providers').createConfigurationValidators({
       config, enabled: config.externalIntegrationsEnabled,
     });
+    services.synchronizeNdiWebsite = require('./website-knowledge-sync').createManualWebsiteSyncService({ repository, logger });
     services.aiConfigured = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
     const telegram = config.externalIntegrationsEnabled === true && config.telegram.botToken && config.telegram.chatId
       ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: true }) : null;

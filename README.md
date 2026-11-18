@@ -26,7 +26,7 @@ Generator memakai pengetahuan bisnis NDI yang disimpan di MySQL dan harus disetu
 
 Setiap konten baru wajib menyertakan CTA kontekstual dan satu URL HTTPS yang sama persis dengan **Website Resmi / CTA URL**. Nilai awalnya `https://nusadataindonesia.com`; admin boleh menetapkan URL HTTPS lain yang valid. Aplikasi tidak mengunjungi URL CTA. URL dashboard dan situs pemasaran adalah konfigurasi yang berbeda.
 
-Migrasi `021` mengarsipkan konfigurasi legacy dan menyiapkan knowledge NDI; migrasi `022` menambah strategi konten. Keduanya additive dan tidak menghapus facts/slot/session/audit/integrasi maupun mengubah status automation. Runtime NDI tidak membaca facts lama. Strategi, automation dan scheduler memerlukan tindakan admin/operator terpisah. Sinkronisasi Website NDI belum tersedia pada branch ini dan direncanakan untuk Fase C. Kesiapan deployment dan rollback database tetap perlu review operator.
+Migrasi `021` mengarsipkan konfigurasi legacy dan menyiapkan knowledge NDI; migrasi `022` menambah strategi konten, dan `023` menambah alur usulan sync website. Ketiganya additive dan tidak menghapus facts/slot/session/audit/integrasi maupun mengubah status automation. Runtime NDI tidak membaca facts lama. Strategi, automation dan scheduler memerlukan tindakan admin/operator terpisah. Sync Website hanya berjalan setelah admin menekan tombol, mengambil origin resmi tetap, dan menyimpan perubahan sebagai usulan yang harus ditinjau per item. Kesiapan deployment dan rollback database tetap perlu review operator.
 
 Perintah meminta email dan password; input password disembunyikan. Tidak ada akun atau kredensial administrator bawaan.
 
@@ -54,7 +54,7 @@ npm test
 
 Tes integrasi MySQL memakai server disposable dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true` dan alamat loopback. Jangan jalankan tes destruktif terhadap database produksi atau volume Compose persisten. Tes provider menggunakan mock; setup dan tes tidak boleh mengirim notifikasi Telegram atau mempublikasikan post Threads.
 
-CI menyiapkan schema disposable khusus untuk menguji upgrade legacy sampai migrasi `022`, termasuk retensi data, strategi konten, dan pencegahan kontaminasi prompt.
+CI menyiapkan schema disposable khusus untuk menguji upgrade legacy sampai migrasi `023`, termasuk retensi data, strategi konten, versioning proposal website, dan pencegahan kontaminasi prompt.
 
 Perintah aplikasi lain:
 

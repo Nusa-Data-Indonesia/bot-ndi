@@ -151,6 +151,41 @@ test('NDI dashboard readiness and unknown-publication review on disposable MySQL
     await assertAccessible(page, 'NDI dashboard');
   });
 
+  await t.test('website synchronization is click-only and renders website text as inert content', async () => {
+    let reads = 0;
+    let syncPosts = 0;
+    const hostileText = '<img src=x onerror=window.__websiteInjected=true>';
+    await page.route('**/api/website-sync', async (route) => {
+      if (route.request().method() === 'POST') {
+        syncPosts++;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ proposalCount: 1 }) });
+      }
+      reads++;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        knowledgeVersion: 1,
+        runs: [],
+        proposals: [{ id: '77', syncRunId: 'test-run', knowledgeVersion: 1, field: 'services', operation: 'add', targetValue: hostileText,
+          baseValue: null, sourceUrl: 'https://nusadataindonesia.com/', sourceTitle: '<script>window.__websiteInjected=true</script>',
+          fetchedAt: new Date().toISOString(), status: 'pending' }],
+      }) });
+    });
+    await page.getByRole('tab', { name: 'Konten & brand' }).click();
+    await page.locator('#website-sync-button').waitFor();
+    assert.equal(syncPosts, 0, 'opening the tab only reads existing proposals and does not fetch the website');
+    assert.equal(reads, 1);
+    const proposal = page.locator('#website-sync-proposals article');
+    await proposal.waitFor();
+    assert.equal(await proposal.locator('img,script').count(), 0, 'untrusted HTML is shown only as text');
+    assert.ok((await proposal.innerText()).includes(hostileText));
+    assert.equal(await page.evaluate(() => window.__websiteInjected), undefined);
+    await page.getByRole('button', { name: 'Sinkronkan Website NDI' }).click();
+    await page.locator('#website-sync-proposals article').waitFor();
+    assert.equal(syncPosts, 1, 'one explicit admin button click makes exactly one API request');
+    assert.equal(await page.evaluate(() => window.__websiteInjected), undefined);
+    await assertAccessible(page, 'manual website sync review');
+    await page.unroute('**/api/website-sync');
+  });
+
   await t.test('unknown publication displays reason, timestamps, original account and safe recovery', async () => {
     slotId = randomUUID();
     const profileId = `browser-profile-${randomUUID()}`;

@@ -122,6 +122,13 @@
           <label class="full">Hashtag <span class="field-hint">Opsional, satu per baris. Hashtag lain dalam draf akan ditolak.</span><textarea name="hashtags" rows="2" maxlength="3000"></textarea></label>
           <div class="form-footer full"><span class="muted">Perubahan menyetujui sumber pengetahuan aktif. Jangan masukkan kredensial atau data pelanggan.</span><div class="form-actions"><button class="button primary" type="submit">Tinjau dan simpan pengetahuan</button></div></div>
         </form>
+        <section class="panel stack" aria-labelledby="website-sync-title">
+          <div><p class="eyebrow">FASE C · SUMBER SEKUNDER</p><h2 id="website-sync-title">Sinkronkan Website NDI</h2><p class="muted">Permintaan ini hanya mengambil halaman resmi <strong>https://nusadataindonesia.com</strong> setelah tombol ditekan. Teks website adalah usulan yang belum tepercaya; setiap perubahan layanan perlu Anda tinjau satu per satu.</p></div>
+          <div class="form-actions"><button id="website-sync-button" class="button primary" type="button">Sinkronkan Website NDI</button></div>
+          <div id="website-sync-status" class="notice info" role="status">Sinkronisasi belum diminta.</div>
+          <div id="website-sync-proposals" class="integration-history" aria-live="polite"></div>
+          <div><h3>Riwayat sinkronisasi</h3><div id="website-sync-runs" class="integration-history"></div></div>
+        </section>
       </section>
 
       <section id="tab-strategy" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-strategy" aria-hidden="true" tabindex="0" hidden>

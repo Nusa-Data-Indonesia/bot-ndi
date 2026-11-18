@@ -7,6 +7,7 @@ const { isInActiveWindow, normalizeScheduleInterval } = require('./policy');
 const { validateNdiSettings } = require('./ndi-settings');
 const { validateBusinessKnowledge } = require('./business-knowledge');
 const { contentStrategyReadiness, selectUniform, validateStrategyInput } = require('./content-strategy');
+const { OFFICIAL_URL } = require('./website-knowledge-sync');
 
 const STALE_PUBLISHING_AFTER_MS = 120_000;
 
@@ -143,18 +144,19 @@ function createRepository(pool) {
     };
   }
   async function getSettings() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,business_knowledge_version,automation_enabled FROM settings WHERE id=1');
     const row = rows[0];
-    if (!row) return { automationEnabled: false, businessKnowledgeApproved: false };
-    return { ...runtimeSettings(row), businessKnowledgeApproved: Boolean(row.business_knowledge_approved), automationEnabled: Boolean(row.automation_enabled) };
+    if (!row) return { automationEnabled: false, businessKnowledgeApproved: false, businessKnowledgeVersion: 1 };
+    return { ...runtimeSettings(row), businessKnowledgeApproved: Boolean(row.business_knowledge_approved), businessKnowledgeVersion: Number(row.business_knowledge_version || 1), automationEnabled: Boolean(row.automation_enabled) };
   }
   async function getRuntimeState() {
-    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1');
+    const [rows] = await selectQuery(pool, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,business_knowledge_version,automation_enabled FROM settings WHERE id=1');
     const row = rows[0];
     const settings = runtimeSettings(row);
     const history = await listSlots(1000);
     const strategy = await getStrategyStatus(pool);
     return { settings, businessKnowledge: settings.businessKnowledge, businessKnowledgeApproved: Boolean(row?.business_knowledge_approved),
+      businessKnowledgeVersion: Number(row?.business_knowledge_version || 1),
       contentStrategyReady: strategy.ready, contentStrategyReason: strategy.message, contentStrategyReasonCode: strategy.reasonCode,
       contentStrategy: strategy, facts: [], history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
   }
@@ -175,6 +177,164 @@ function createRepository(pool) {
       proposalSettings: proposalSettings ? { enabled: Boolean(proposalSettings.enabled), intervalDays: Number(proposalSettings.interval_days), nextRunAt: proposalSettings.next_run_at, lastStartedAt: proposalSettings.last_started_at, lastCompletedAt: proposalSettings.last_completed_at, lastErrorCode: proposalSettings.last_error_code } : { enabled: false, intervalDays: 30 },
       readiness: strategy,
     };
+  }
+  async function getWebsiteSyncState() {
+    const [runs] = await selectQuery(pool, `SELECT id,requested_by,source_url,knowledge_version,status,proposal_count,error_code,fetched_at,completed_at,created_at
+      FROM website_sync_runs ORDER BY created_at DESC,id DESC LIMIT 50`);
+    const [proposals] = await selectQuery(pool, `SELECT id,sync_run_id,knowledge_version,field_name,operation,target_value,base_value,source_url,source_title,fetched_at,status,conflict_code,reviewed_by,reviewed_at,created_at
+      FROM website_sync_proposals ORDER BY id DESC LIMIT 200`);
+    return {
+      knowledgeVersion: (await getSettings()).businessKnowledgeVersion,
+      runs: runs.map((item) => ({ id: item.id, requestedBy: item.requested_by == null ? null : String(item.requested_by), sourceUrl: item.source_url,
+        knowledgeVersion: Number(item.knowledge_version), status: item.status, proposalCount: Number(item.proposal_count), errorCode: item.error_code,
+        fetchedAt: item.fetched_at, completedAt: item.completed_at, createdAt: item.created_at })),
+      proposals: proposals.map((item) => ({ id: String(item.id), syncRunId: item.sync_run_id, knowledgeVersion: Number(item.knowledge_version),
+        field: item.field_name, operation: item.operation, targetValue: item.target_value, baseValue: item.base_value, sourceUrl: item.source_url,
+        sourceTitle: item.source_title, fetchedAt: item.fetched_at, status: item.status, conflictCode: item.conflict_code,
+        reviewedBy: item.reviewed_by == null ? null : String(item.reviewed_by), reviewedAt: item.reviewed_at, createdAt: item.created_at })),
+    };
+  }
+  async function startWebsiteSyncRun(adminId) {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[settings]] = await selectQuery(connection, `SELECT business_knowledge_json,business_knowledge_approved,business_knowledge_version
+        FROM settings WHERE id=1 FOR UPDATE`, [], 'query');
+      const knowledge = json(settings?.business_knowledge_json, {});
+      const checked = validateBusinessKnowledge(knowledge);
+      if (!settings?.business_knowledge_approved || !checked.valid) {
+        throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
+      }
+      const id = randomUUID();
+      const knowledgeVersion = Number(settings.business_knowledge_version || 1);
+      await connection.execute(`INSERT INTO website_sync_runs (id,requested_by,source_url,knowledge_version,status)
+        VALUES (?,?,?,?,'running')`, [id, adminId || null, OFFICIAL_URL, knowledgeVersion]);
+      await audit(connection, adminId, 'ndi_website_sync.requested', { runId: id, sourceUrl: OFFICIAL_URL, knowledgeVersion });
+      await connection.commit();
+      return { id, knowledgeVersion, knowledge: checked.knowledge };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function completeWebsiteSyncRun({ id, knowledgeVersion, sourceUrl, sourceTitle, fetchedAt, completedAt, proposals }) {
+    if (typeof id !== 'string' || !Number.isInteger(knowledgeVersion) || sourceUrl !== OFFICIAL_URL
+      || typeof sourceTitle !== 'string' || !sourceTitle.trim() || sourceTitle.length > 200
+      || !(fetchedAt instanceof Date) || !Number.isFinite(fetchedAt.getTime())
+      || !Array.isArray(proposals) || proposals.length > 100
+      || !(completedAt instanceof Date) || !Number.isFinite(completedAt.getTime())) {
+      throw Object.assign(new Error('INVALID_WEBSITE_SYNC_RESULT'), { code: 'INVALID_WEBSITE_SYNC_RESULT', status: 400 });
+    }
+    const prepared = proposals.map((item) => {
+      const cleanValue = (value) => typeof value === 'string' && value === value.trim() && value.length > 0 && value.length <= 300
+        && !/[\u0000-\u001f\u007f]/u.test(value);
+      if (!['add', 'edit', 'remove'].includes(item?.operation) || !cleanValue(item.targetValue)
+        || (item.operation === 'add' && item.baseValue !== null)
+        || (item.operation !== 'add' && !cleanValue(item.baseValue))
+        || item.sourceUrl !== OFFICIAL_URL || item.sourceTitle !== sourceTitle
+        || !(item.fetchedAt instanceof Date) || item.fetchedAt.getTime() !== fetchedAt.getTime()
+        || item.knowledgeVersion !== knowledgeVersion) {
+        throw Object.assign(new Error('INVALID_WEBSITE_SYNC_PROPOSAL'), { code: 'INVALID_WEBSITE_SYNC_PROPOSAL', status: 400 });
+      }
+      return item;
+    });
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[run]] = await selectQuery(connection, 'SELECT status,knowledge_version,source_url,requested_by FROM website_sync_runs WHERE id=? FOR UPDATE', [id]);
+      if (!run || run.status !== 'running' || Number(run.knowledge_version) !== knowledgeVersion || run.source_url !== OFFICIAL_URL) {
+        throw Object.assign(new Error('WEBSITE_SYNC_RUN_NOT_FOUND'), { code: 'WEBSITE_SYNC_RUN_NOT_FOUND', status: 409 });
+      }
+      for (const proposal of prepared) {
+        await connection.execute(`INSERT INTO website_sync_proposals (sync_run_id,knowledge_version,field_name,operation,target_value,base_value,source_url,source_title,fetched_at)
+          VALUES (?,?, 'services', ?,?,?,?,?,?)`, [id, knowledgeVersion, proposal.operation, proposal.targetValue, proposal.baseValue, OFFICIAL_URL, sourceTitle, fetchedAt]);
+      }
+      await connection.execute(`UPDATE website_sync_runs SET status='completed',proposal_count=?,fetched_at=?,completed_at=? WHERE id=?`, [prepared.length, fetchedAt, completedAt, id]);
+      await audit(connection, run.requested_by, 'ndi_website_sync.completed', { runId: id, proposalCount: prepared.length, sourceUrl: OFFICIAL_URL, knowledgeVersion });
+      await connection.commit();
+      return { syncRunId: id, proposalCount: prepared.length, fetchedAt };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function failWebsiteSyncRun({ id, errorCode, failedAt }) {
+    if (typeof id !== 'string' || !/^WEBSITE_SYNC_[A-Z0-9_]{2,60}$/.test(errorCode)
+      || !(failedAt instanceof Date) || !Number.isFinite(failedAt.getTime())) return false;
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[run]] = await selectQuery(connection, 'SELECT requested_by FROM website_sync_runs WHERE id=? AND status=\'running\' FOR UPDATE', [id]);
+      if (!run) { await connection.commit(); return false; }
+      const [updated] = await mutationQuery(connection, `UPDATE website_sync_runs SET status='failed',error_code=?,completed_at=?
+        WHERE id=? AND status='running'`, [errorCode, failedAt, id]);
+      if (updated.affectedRows) await audit(connection, run.requested_by, 'ndi_website_sync.failed', { runId: id, errorCode });
+      await connection.commit();
+      return Boolean(updated.affectedRows);
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
+  }
+  async function reviewWebsiteKnowledgeProposal(id, decision, adminId) {
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || !['approve', 'reject'].includes(decision)) {
+      throw Object.assign(new Error('INVALID_WEBSITE_SYNC_REVIEW'), { code: 'INVALID_WEBSITE_SYNC_REVIEW', status: 400 });
+    }
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [[settings]] = await selectQuery(connection, 'SELECT business_knowledge_json,business_knowledge_approved,business_knowledge_version FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[proposal]] = await selectQuery(connection, 'SELECT * FROM website_sync_proposals WHERE id=? FOR UPDATE', [id]);
+      if (!proposal) throw Object.assign(new Error('WEBSITE_SYNC_PROPOSAL_NOT_FOUND'), { code: 'WEBSITE_SYNC_PROPOSAL_NOT_FOUND', status: 404 });
+      if (proposal.status !== 'pending') throw Object.assign(new Error('WEBSITE_SYNC_PROPOSAL_ALREADY_REVIEWED'), { code: 'WEBSITE_SYNC_PROPOSAL_ALREADY_REVIEWED', status: 409 });
+      const currentVersion = Number(settings?.business_knowledge_version || 1);
+      if (decision === 'reject') {
+        await connection.execute(`UPDATE website_sync_proposals SET status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.rejected', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, field: proposal.field_name, operation: proposal.operation, knowledgeVersion: Number(proposal.knowledge_version) });
+        await connection.commit();
+        return { status: 'rejected', knowledgeVersion: currentVersion };
+      }
+      const conflict = (code) => ({ status: 'conflict', code });
+      if (!settings?.business_knowledge_approved || currentVersion !== Number(proposal.knowledge_version)
+        || proposal.field_name !== 'services' || proposal.source_url !== OFFICIAL_URL) {
+        const code = currentVersion !== Number(proposal.knowledge_version) ? 'KNOWLEDGE_VERSION_CHANGED' : 'KNOWLEDGE_NOT_APPROVED';
+        await connection.execute(`UPDATE website_sync_proposals SET status='conflict',conflict_code=?,reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [code, adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.conflict', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, conflictCode: code, proposalVersion: Number(proposal.knowledge_version), currentVersion });
+        await connection.commit();
+        return conflict(code);
+      }
+      const knowledge = json(settings.business_knowledge_json, {});
+      const services = Array.isArray(knowledge.services) ? [...knowledge.services] : [];
+      const normalized = (value) => String(value).normalize('NFKC').trim().toLocaleLowerCase('id');
+      const baseIndex = proposal.base_value == null ? -1 : services.findIndex((value) => normalized(value) === normalized(proposal.base_value));
+      const targetExists = services.some((value) => normalized(value) === normalized(proposal.target_value));
+      let nextServices;
+      let conflictCode = null;
+      if (proposal.operation === 'add') {
+        if (targetExists) conflictCode = 'SERVICE_ALREADY_EXISTS';
+        else nextServices = [...services, proposal.target_value];
+      } else if (proposal.operation === 'remove') {
+        if (baseIndex < 0 || normalized(proposal.target_value) !== normalized(proposal.base_value)) conflictCode = 'SERVICE_CHANGED';
+        else nextServices = services.filter((_value, index) => index !== baseIndex);
+      } else if (proposal.operation === 'edit') {
+        if (baseIndex < 0 || targetExists || normalized(proposal.target_value) === normalized(proposal.base_value)) conflictCode = 'SERVICE_CHANGED';
+        else nextServices = services.map((value, index) => index === baseIndex ? proposal.target_value : value);
+      } else conflictCode = 'INVALID_WEBSITE_SYNC_OPERATION';
+      const checked = conflictCode ? null : validateBusinessKnowledge({ ...knowledge, services: nextServices });
+      if (!conflictCode && !checked?.valid) conflictCode = 'KNOWLEDGE_VALIDATION_FAILED';
+      if (conflictCode) {
+        await connection.execute(`UPDATE website_sync_proposals SET status='conflict',conflict_code=?,reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+          WHERE id=? AND status='pending'`, [conflictCode, adminId || null, proposal.id]);
+        await audit(connection, adminId, 'ndi_website_sync.proposal.conflict', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, conflictCode, proposalVersion: Number(proposal.knowledge_version), currentVersion });
+        await connection.commit();
+        return conflict(conflictCode);
+      }
+      const nextVersion = currentVersion + 1;
+      await connection.execute(`UPDATE settings SET business_knowledge_json=?,business_knowledge_version=? WHERE id=1`, [JSON.stringify(checked.knowledge), nextVersion]);
+      await connection.execute(`UPDATE website_sync_proposals SET status='approved',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3)
+        WHERE id=? AND status='pending'`, [adminId || null, proposal.id]);
+      await connection.execute(`UPDATE website_sync_proposals SET knowledge_version=? WHERE sync_run_id=? AND status='pending' AND id<>? AND knowledge_version=?`, [nextVersion, proposal.sync_run_id, proposal.id, currentVersion]);
+      await audit(connection, adminId, 'ndi_website_sync.proposal.approved', { proposalId: String(proposal.id), syncRunId: proposal.sync_run_id, field: proposal.field_name, operation: proposal.operation, knowledgeVersion: nextVersion });
+      await connection.commit();
+      return { status: 'approved', knowledgeVersion: nextVersion, knowledge: checked.knowledge };
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
   }
   function strategyTable(kind) {
     if (kind === 'category') return { table: 'content_categories', detail: 'guidance', event: 'content_category' };
@@ -381,9 +541,11 @@ function createRepository(pool) {
     try {
       await connection.beginTransaction();
       await selectQuery(connection, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query');
-      await connection.execute('UPDATE settings SET business_knowledge_json=?,business_knowledge_approved=TRUE WHERE id=1', [JSON.stringify(checked.knowledge)]);
-      await audit(connection, adminId, 'ndi_knowledge.approved', { serviceCount: checked.knowledge.services.length });
-      await connection.commit(); return { knowledge: checked.knowledge, approved: true };
+      const [[versionRow]] = await selectQuery(connection, 'SELECT business_knowledge_version FROM settings WHERE id=1', [], 'query');
+      const nextVersion = Number(versionRow?.business_knowledge_version || 1) + 1;
+      await connection.execute('UPDATE settings SET business_knowledge_json=?,business_knowledge_approved=TRUE,business_knowledge_version=? WHERE id=1', [JSON.stringify(checked.knowledge), nextVersion]);
+      await audit(connection, adminId, 'ndi_knowledge.approved', { serviceCount: checked.knowledge.services.length, knowledgeVersion: nextVersion });
+      await connection.commit(); return { knowledge: checked.knowledge, approved: true, knowledgeVersion: nextVersion };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async function listFacts() {
@@ -1312,7 +1474,7 @@ function createRepository(pool) {
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {}),...(status==='published'&&(details.providerPublishedAt||details.publishedAt)?{providerPublishedAt:details.providerPublishedAt||details.publishedAt}:{})});return true; }
-  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,getWebsiteSyncState,startWebsiteSyncRun,completeWebsiteSyncRun,failWebsiteSyncRun,reviewWebsiteKnowledgeProposal,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};
