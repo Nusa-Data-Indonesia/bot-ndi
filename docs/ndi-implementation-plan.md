@@ -43,7 +43,7 @@ Dokumen ini mengikuti `docs/BOT-NDI-MASTER-CODEX-PROMPT.md`. Fase A berada di PR
 - Deployment shell tests pass within `npm test`. MySQL 8.4 migration 021–023: 1/1 pass; publication-resolution MySQL: 10/10 pass. `npm run test:integration`: 94 pass; MySQL config check: 1 pass.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation: PASS.
 - Browser E2E: **PASS 4/4** on local Chromium and disposable MySQL; integrations and scheduler disabled.
-- Docker build dan Compose validation: **PASS**. `actionlint` tidak tersedia. GitHub CI B/C menunggu PR dan belum ada hasil.
+- Docker build dan Compose validation: **PASS**. PR #4 dan #5 terbuka. CI runs `44310912797` (B: 492 pass/1 fail/7 skipped) dan `44310952126` (C: 502 pass/1 fail/7 skipped) pada temporary trigger gagal hanya di `test/workflow-deployment.test.js`; trigger dikembalikan sesuai gate approval SSOT. Final heads belum memiliki checks; `actionlint` tidak tersedia.
 - Tidak menjalankan provider nyata, posting Threads, scheduler, atau migrasi pada produksi. Detail per-test ada di `docs/ndi-requirements-traceability.md`.
 
 ## Migrasi, kompatibilitas, dan rollout
@@ -54,5 +54,5 @@ Fase B membutuhkan PR Phase A lebih dahulu; Fase C bergantung pada struktur dan 
 
 ## GO / NO-GO
 
-- **GO untuk review PR bertingkat:** source B/C, regression tests dan docs tersedia. Status pembukaan PR dilaporkan setelah GitHub API mengonfirmasi.
-- **NO-GO merge/deployment saat ini:** CI Phase B/C belum berjalan dan review state produksi/rollback masih BLOCKED. Merge ke `main` berpotensi auto-deploy dan dilarang tanpa persetujuan eksplisit.
+- **GO untuk review PR bertingkat:** PR #4 (B) dan #5 (C) terbuka; source, regression tests dan docs tersedia.
+- **NO-GO merge/deployment saat ini:** final head CI B/C belum memiliki checks dan review state produksi/rollback masih BLOCKED. Merge ke `main` berpotensi auto-deploy dan dilarang tanpa persetujuan eksplisit.

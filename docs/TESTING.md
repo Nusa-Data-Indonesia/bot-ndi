@@ -60,7 +60,7 @@ Pada branch B/C, tes browser **PASS 4/4** dengan MySQL disposable pada loopback 
 - `npm run test:integration`: 94 passed, 0 failed, 0 skipped; MySQL configuration check terpisah: 1 passed.
 - `test/ndi-migration.mysql.integration.test.js`: 1 passed pada MySQL disposable; publication-resolution MySQL: 10/10 passed.
 - `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation, dan Docker build: PASS.
-- Browser E2E: 4/4 PASS. Phase B/C GitHub CI belum berjalan sebelum PR dibuat; `actionlint` tidak terpasang.
+- Browser E2E: 4/4 PASS. Final B/C PR heads tidak memiliki GitHub checks karena workflow hanya menargetkan `main`; percobaan runs `44310912797`/`44310952126` gagal pada satu assertion workflow yang mengunci filter `push: [main]`. Trigger sementara dikembalikan sesuai gate persetujuan SSOT. `actionlint` tidak terpasang.
 
 Tes mock tidak memverifikasi permission provider, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Tidak menjalankan posting nyata, mengaktifkan scheduler, atau menghapus volume Docker.
 

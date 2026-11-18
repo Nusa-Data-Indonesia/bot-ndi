@@ -77,6 +77,6 @@ Pencarian case-insensitive pasca-perubahan masih menemukan istilah game/top-up p
 | Lint/typecheck/check/Compose | PASS: `npm run lint`, `npm run typecheck`, `npm run check`, Compose config dengan env test-only |
 | Browser E2E NDI | PASS: 4/4 dengan Chromium lokal dan MySQL disposable pada loopback; scheduler/provider integrations OFF |
 | Docker image build | PASS: production Dockerfile built as local verification tag `bot-ndi-phase-c-verify` |
-| Compose / GitHub CI | Compose config PASS dengan env test-only. Phase B/C GitHub CI menunggu PR runs; `actionlint` tidak tersedia. PR #3 Phase A run `44277798887` PASS, bukan bukti untuk branch ini. |
+| Compose / GitHub CI | Compose config PASS dengan env test-only. CI workflow hanya memicu pull_request/push ke `main`, jadi final head PR B/C tidak memiliki checks. Percobaan run `44310912797`/`44310952126` gagal pada assertion lama yang mensyaratkan `push: [main]`; trigger sementara dikembalikan mengikuti gate approval SSOT. `actionlint` tidak tersedia. PR #3 run `44277798887` PASS tetapi bukan bukti B/C. |
 
-Semua DB tests menggunakan database disposable dan tidak memakai volume produksi. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Isi production DB dan rollback tetap tidak diketahui. Merge/deployment NO-GO sampai CI branch serta review operator R-055/R-068 selesai.
+Semua DB tests menggunakan database disposable dan tidak memakai volume produksi. Tidak ada provider nyata, Threads post, scheduler produksi, atau database produksi yang disentuh. Isi production DB dan rollback tetap tidak diketahui. Merge/deployment NO-GO sampai checks final head serta review operator R-055/R-068 selesai.

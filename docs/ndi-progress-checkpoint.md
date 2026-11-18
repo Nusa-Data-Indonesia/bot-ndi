@@ -3,8 +3,9 @@
 Diperbarui: 2026-11-18
 Branch implementasi: `codex/ndi-phase-b` untuk Fase B, kemudian `codex/ndi-phase-c` bertumpuk di atasnya.
 PR Phase A: #3 terbuka, belum merge.
-PR Phase B: #4 terbuka, base `codex/ndi-phase-a`; CI berjalan setelah PR dibuat.
-Phase C: source dan pengujian selesai pada working tree branch `codex/ndi-phase-c`; PR bertarget `codex/ndi-phase-b` dibuat setelah commit/push final.
+PR Phase B: #4 terbuka, base `codex/ndi-phase-a`.
+PR Phase C: #5 terbuka, base `codex/ndi-phase-b`.
+GitHub CI: workflow hanya memicu `pull_request`/`push` ke `main`, sehingga final head B/C tidak memiliki checks. Runs percobaan `44310912797`/`44310952126` dari temporary CI trigger gagal hanya pada assertion yang mensyaratkan filter `push: [main]`; trigger sementara dikembalikan mengikuti gate persetujuan SSOT. T-30 BLOCKED sampai branch CI dapat dijalankan dengan persetujuan.
 
 ## Otorisasi dan batas keselamatan
 
@@ -48,11 +49,10 @@ Phase C: source dan pengujian selesai pada working tree branch `codex/ndi-phase-
 - Migration 021–023 di MySQL 8.4 disposable: **1/1 PASS**, termasuk upgrade/rerun, legacy retention, strategy gate, website proposal/version/audit/conflict, dan failure preservation.
 - Publication resolution MySQL: **10/10 pass**. `npm run lint`, `npm run typecheck`, `npm run check`, dan Compose config validation **PASS**.
 - Browser E2E **4/4 PASS** dengan Chromium lokal dan MySQL disposable yang hanya bind ke loopback; scheduler/integrasi nonaktif, website API di-intercept, tanpa provider atau real-site fetch.
-- Docker build dan Compose validation **PASS**. `actionlint` tidak tersedia. GitHub CI Phase B/C belum berjalan sebelum PR dibuat.
+- Docker build dan Compose validation **PASS**. `actionlint` tidak tersedia. GitHub Actions runs `44310912797` (B: 492 pass/1 fail/7 skipped) dan `44310952126` (C: 502 pass/1 fail/7 skipped) gagal pada satu assertion `test/workflow-deployment.test.js`; perubahan trigger yang menyebabkan run sudah dikembalikan. Final PR heads tidak memiliki CI run.
 
 ## Next steps
 
-1. Finalkan commit khusus Phase C dan push `codex/ndi-phase-c` di atas branch Phase B.
-2. Buat PR Phase C bertarget `codex/ndi-phase-b`; jangan merge.
-3. Periksa CI aktual PR #4 dan PR Phase C setelah kedua workflow berjalan; T-30 tetap BLOCKED sampai hasilnya tersedia.
-4. Baca ulang SSOT, audit requirement awal/tengah/akhir dan cross-phase invariants, lalu perbarui status PR/CI dan GO-NO-GO berdasarkan bukti.
+1. Review PR bertingkat #4 (B) dan #5 (C); jangan merge.
+2. Workflow CI final hanya menargetkan `main`; perubahan trigger untuk branch B/C membutuhkan persetujuan eksplisit sesuai SSOT.
+3. R-055 dan R-068 tetap memerlukan pemeriksaan operator produksi. Tidak ada akses atau migration produksi.
