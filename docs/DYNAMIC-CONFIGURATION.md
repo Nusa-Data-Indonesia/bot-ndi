@@ -25,9 +25,15 @@ New slots snapshot profile ID, account ID, and configuration version when create
 
 ## NDI business knowledge and CTA
 
-Migration `021_ndi_business_knowledge.sql` adds an admin-managed NDI knowledge document, its explicit approval state, archived copies of the prior business settings/knowledge, and a `slots.cta_url` snapshot. It does not change the automation flag, automation session, schedule interval, integration credentials, or slot status. Existing legacy knowledge is not implicitly approved; the dashboard must save and approve the NDI knowledge before automation can start.
+Migrations `021`–`022` add NDI knowledge, its explicit approval state, archived copies of prior settings/knowledge, per-slot CTA and content-strategy snapshots, provider publish timestamps. They do not change the automation flag, session, schedule interval, integration credentials, or slot status. Legacy knowledge is not implicitly approved. Admin review is required before generation can pass readiness; content strategy has a separate explicit approval gate.
 
-The admin's **Website Resmi / CTA URL** is an HTTPS URL and may use any valid hostname. The marketing CTA is separate from the fixed NDI website-sync origin planned for a later phase. Saving a CTA never fetches or probes its destination. A slot captures the CTA in the same transaction that claims it for generation; all retries and the persisted publish payload use that snapshot. A later edit applies to newly claimed slots only. The final caption must end with the exact slot URL, pass the NDI content/claim checks, and remain within 500 characters immediately before publication. Legacy ready slots without a valid NDI safety hash and CTA snapshot fail closed; `publishing` and `unknown` slots retain their existing status and reconciliation path.
+The admin's **Website Resmi / CTA URL** is an HTTPS URL and may use any valid hostname. Saving a CTA never fetches or probes its destination. A slot captures the CTA in the same transaction that claims it for generation; all retries and the persisted publish payload use that snapshot. A later edit applies to newly claimed slots only. The final caption must end with the exact slot URL, pass the NDI content/claim checks, and remain within 500 characters immediately before publication. Legacy ready slots without a valid NDI safety hash and CTA snapshot fail closed; `publishing` and `unknown` slots retain their existing status and reconciliation path.
+
+## Content strategy
+
+The **Strategi Konten** dashboard manages seeded categories and styles, their active/archive state, explicit strategy approval, and AI category-proposal settings. Strategy changes require automation to be paused. The proposal worker defaults OFF, runs separately from publishing, delays its first run by the configured 30–365 day interval, and never activates a suggested category without admin approval.
+
+Manual website-knowledge synchronization is Phase C work and is not included in this branch.
 
 ## Change a model or roll back
 

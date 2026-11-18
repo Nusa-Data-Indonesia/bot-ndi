@@ -13,7 +13,7 @@ function registerAutomationRoutes(app, { repository, services, authenticated, mu
       }
       const state = await repository.getRuntimeState();
       if (state.contentStrategyReady !== true) {
-        return res.status(409).json({ error: 'CONTENT_STRATEGY_NOT_READY' });
+        return res.status(409).json({ error: state.contentStrategyReasonCode || 'CONTENT_STRATEGY_NOT_READY' });
       }
       const settings = validateNdiSettings(state.settings || {});
       const provider = services.getProviderStatus ? await services.getProviderStatus() : { connected: false };

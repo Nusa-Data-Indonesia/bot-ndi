@@ -53,6 +53,7 @@
           <nav class="sidebar-nav" role="tablist" aria-orientation="vertical" aria-labelledby="sidebar-title">
             <button class="tab active" id="tab-button-dashboard" data-tab="dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM13 3h8v6h-8zM3 17h8v4H3z"/></svg><span>Dashboard</span></button>
             <button class="tab" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>Konten &amp; brand</span></button>
+            <button class="tab" id="tab-button-strategy" data-tab="strategy" role="tab" aria-controls="tab-strategy" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="19" r="2"/></svg><span>Strategi konten</span></button>
             <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Jadwal</span></button>
             <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg><span>Layanan NDI</span></button>
             <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="7" cy="5" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="19" r="1"/></svg><span>Riwayat &amp; catatan</span></button>
@@ -121,6 +122,37 @@
           <label class="full">Hashtag <span class="field-hint">Opsional, satu per baris. Hashtag lain dalam draf akan ditolak.</span><textarea name="hashtags" rows="2" maxlength="3000"></textarea></label>
           <div class="form-footer full"><span class="muted">Perubahan menyetujui sumber pengetahuan aktif. Jangan masukkan kredensial atau data pelanggan.</span><div class="form-actions"><button class="button primary" type="submit">Tinjau dan simpan pengetahuan</button></div></div>
         </form>
+      </section>
+
+      <section id="tab-strategy" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-strategy" aria-hidden="true" tabindex="0" hidden>
+        <section class="panel stack" aria-labelledby="strategy-title">
+          <div><p class="eyebrow">FASE B · STRATEGI KONTEN</p><h2 id="strategy-title">Kategori dan gaya</h2><p class="muted">Kategori dan gaya dipilih terpisah untuk setiap slot, lalu disimpan bersama snapshot CTA. Perubahan di sini tidak mengaktifkan otomasi.</p></div>
+          <div id="strategy-readiness" class="notice warning" role="status">Memuat status strategi…</div>
+          <div class="form-actions"><button id="strategy-enable" class="button primary" type="button" hidden>Aktifkan strategi</button><button id="strategy-disable" class="button quiet" type="button" hidden>Nonaktifkan strategi</button></div>
+        </section>
+        <form id="category-create-form" class="panel form-grid">
+          <div class="panel-heading full"><div><h3>Kategori konten</h3><p class="muted">Delapan kategori awal tersedia. Arsip mempertahankan referensi dan audit.</p></div></div>
+          <label>Nama kategori<input name="name" maxlength="120" required></label>
+          <label class="full">Panduan kategori<textarea name="guidance" rows="3" maxlength="3000" required></textarea></label>
+          <div class="form-footer full"><span class="muted">Panduan membentuk topik; knowledge bisnis yang disetujui tetap sumber fakta.</span><button class="button primary" type="submit">Tambah kategori</button></div>
+        </form>
+        <div id="strategy-categories" class="stack" aria-label="Daftar kategori"></div>
+        <form id="style-create-form" class="panel form-grid">
+          <div class="panel-heading full"><div><h3>Gaya bahasa</h3><p class="muted">Tujuh template awal tersedia. Instruksi diterapkan pada prompt generation dan dibatasi guardrail NDI.</p></div></div>
+          <label>Nama gaya<input name="name" maxlength="120" required></label>
+          <label class="full">Instruksi gaya<textarea name="instructions" rows="3" maxlength="3000" required></textarea></label>
+          <div class="form-footer full"><span class="muted">Instruksi bukan fakta bisnis dan tidak dapat mengubah CTA atau batas klaim.</span><button class="button primary" type="submit">Tambah gaya</button></div>
+        </form>
+        <div id="strategy-styles" class="stack" aria-label="Daftar gaya"></div>
+        <section class="panel stack" aria-labelledby="category-proposals-title">
+          <div><h3 id="category-proposals-title">Usulan kategori AI</h3><p class="muted">Usulan selalu menunggu persetujuan admin. Job terpisah dari scheduler penerbitan, default nonaktif, maksimal satu panggilan OpenRouter setiap interval.</p></div>
+          <form id="proposal-settings-form" class="form-grid">
+            <label class="check-row"><input name="enabled" type="checkbox"><span>Aktifkan pembuatan usulan berkala</span></label>
+            <label>Interval (30–365 hari)<input name="intervalDays" type="number" min="30" max="365" step="1" value="30" required></label>
+            <div class="form-footer full"><span id="proposal-schedule-status" class="muted">Status job belum dimuat.</span><button class="button quiet" type="submit">Simpan pengaturan usulan</button></div>
+          </form>
+          <div id="category-proposals" class="stack" aria-label="Daftar usulan kategori"></div>
+        </section>
       </section>
 
       <section id="tab-schedule" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-schedule" aria-hidden="true" tabindex="0" hidden>

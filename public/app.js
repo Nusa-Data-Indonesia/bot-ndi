@@ -134,7 +134,15 @@
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
     AUTOMATION_PROVIDER_HOLD: 'Otomasi tertahan karena akses provider. Buka Integrasi untuk melihat penyebab dan cara pemulihan.',
     ONBOARDING_INCOMPLETE: 'Tinjau pengetahuan bisnis NDI, koneksi Threads, dan penyedia AI sebelum mengaktifkan otomasi.',
-    CONTENT_STRATEGY_NOT_READY: 'Penerbitan ditahan sampai mesin kategori dan gaya konten Fase B tersedia. Otomasi tidak diaktifkan.',
+    CONTENT_STRATEGY_NOT_READY: 'Periksa dan setujui kategori serta gaya konten sebelum mengaktifkan otomasi.',
+    CONTENT_STRATEGY_REVIEW_REQUIRED: 'Tinjau kategori dan gaya lalu aktifkan strategi sebelum mengaktifkan otomasi.',
+    CONTENT_CATEGORIES_EMPTY: 'Aktifkan atau buat minimal satu kategori konten.', CONTENT_STYLES_EMPTY: 'Aktifkan atau buat minimal satu gaya konten.',
+    CONTENT_CATEGORY_ORDER_UNCERTAIN: 'Urutan publikasi provider belum pasti. Tinjau status slot published sebelum melanjutkan.',
+    CONTENT_STRATEGY_SNAPSHOT_MISSING: 'Slot tidak memiliki snapshot strategi yang aman; slot diblokir dari publikasi.',
+    AUTOMATION_MUST_BE_PAUSED: 'Jeda otomasi sebelum mengaktifkan atau menonaktifkan strategi konten.',
+    INVALID_CONTENT_STRATEGY: 'Periksa nama dan panduan kategori atau gaya.', CONTENT_STRATEGY_DUPLICATE: 'Nama atau slug kategori/gaya sudah digunakan.',
+    CONTENT_STRATEGY_NOT_FOUND: 'Kategori atau gaya tidak ditemukan atau sudah diarsipkan.',
+    INVALID_PROPOSAL_SETTINGS: 'Interval usulan harus antara 30 dan 365 hari.', CATEGORY_PROPOSAL_ALREADY_REVIEWED: 'Usulan sudah ditinjau.',
     BUSINESS_KNOWLEDGE_REVIEW_REQUIRED: 'Simpan dan setujui pengetahuan bisnis NDI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
     CONFIG_CONFLICT: 'Konfigurasi sudah berubah. Muat ulang konfigurasi dan periksa lagi; isian Anda tetap tersimpan di form.',
@@ -224,7 +232,7 @@
     }
   }
   const onboardingLabels = {
-    contentStrategy: 'Mesin kategori dan gaya konten (Fase B)',
+    contentStrategy: 'Strategi konten NDI disetujui',
     knowledge: 'Pengetahuan bisnis NDI dan Website Resmi / CTA URL',
     thread: 'Akun Threads testing',
     ai: 'Penyedia AI',
@@ -378,6 +386,76 @@
     link.textContent = cta; link.href = cta;
   }
 
+  function renderStrategyRecords(container, records, kind) {
+    container.replaceChildren();
+    if (!Array.isArray(records) || !records.length) {
+      const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Belum ada item.'; container.append(empty); return;
+    }
+    for (const record of records) {
+      const archived = Boolean(record.archivedAt);
+      const form = document.createElement('form'); form.className = 'panel form-grid strategy-record';
+      form.dataset.kind = kind; form.dataset.id = record.id;
+      const heading = document.createElement('div'); heading.className = 'panel-heading full';
+      const headingText = document.createElement('div');
+      const title = document.createElement('h3'); title.textContent = record.name;
+      const status = document.createElement('p'); status.className = 'muted';
+      status.textContent = archived ? 'Diarsipkan' : record.active ? 'Aktif' : 'Nonaktif';
+      headingText.append(title, status); heading.append(headingText);
+      const nameLabel = document.createElement('label'); nameLabel.textContent = kind === 'category' ? 'Nama kategori' : 'Nama gaya';
+      const name = document.createElement('input'); name.name = 'name'; name.maxLength = 120; name.required = true; name.value = record.name; name.disabled = archived; nameLabel.append(name);
+      const detailLabel = document.createElement('label'); detailLabel.className = 'full'; detailLabel.textContent = kind === 'category' ? 'Panduan kategori' : 'Instruksi gaya';
+      const detail = document.createElement('textarea'); detail.name = kind === 'category' ? 'guidance' : 'instructions'; detail.rows = 3; detail.maxLength = 3000; detail.required = true; detail.value = kind === 'category' ? record.guidance : record.instructions; detail.disabled = archived; detailLabel.append(detail);
+      const footer = document.createElement('div'); footer.className = 'form-footer full';
+      const activeLabel = document.createElement('label'); activeLabel.className = 'check-row';
+      const active = document.createElement('input'); active.type = 'checkbox'; active.name = 'active'; active.checked = record.active; active.disabled = archived;
+      const activeText = document.createElement('span'); activeText.textContent = 'Aktif untuk pemilihan'; activeLabel.append(active, activeText);
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      const save = document.createElement('button'); save.type = 'submit'; save.className = 'button primary'; save.textContent = 'Simpan'; save.disabled = archived;
+      const archive = document.createElement('button'); archive.type = 'button'; archive.className = 'button quiet'; archive.dataset.action = 'archive'; archive.textContent = 'Arsipkan'; archive.hidden = archived;
+      actions.append(save, archive); footer.append(activeLabel, actions); form.append(heading, nameLabel, detailLabel, footer); container.append(form);
+    }
+  }
+
+  function renderCategoryProposals(proposals = []) {
+    const container = $('#category-proposals'); container.replaceChildren();
+    const pending = Array.isArray(proposals) ? proposals.filter((proposal) => proposal.status === 'pending') : [];
+    if (!pending.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Tidak ada usulan yang menunggu tinjauan.'; container.append(empty); return; }
+    for (const proposal of pending) {
+      const card = document.createElement('article'); card.className = 'panel stack';
+      const title = document.createElement('h4'); title.textContent = proposal.name;
+      const detail = document.createElement('p'); detail.className = 'muted'; detail.textContent = proposal.guidance;
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      for (const [decision, label, className] of [['approve', 'Setujui kategori', 'button primary'], ['reject', 'Tolak usulan', 'button quiet']]) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = className; button.dataset.action = `proposal-${decision}`; button.dataset.id = proposal.id; button.textContent = label; actions.append(button);
+      }
+      card.append(title, detail, actions); container.append(card);
+    }
+  }
+
+  function renderContentStrategy(strategy = {}) {
+    state.contentStrategy = strategy;
+    const readiness = strategy.readiness || {};
+    const notice = $('#strategy-readiness');
+    notice.className = `notice ${readiness.ready ? 'success' : 'warning'}`;
+    notice.textContent = readiness.ready
+      ? `Strategi aktif. ${readiness.categoryCount} kategori dan ${readiness.styleCount} gaya tersedia. Penerbitan otomatis tetap memerlukan aktivasi terpisah.`
+      : readiness.message || 'Strategi belum siap. Tinjau kategori, gaya, dan urutan publikasi.';
+    $('#strategy-enable').hidden = readiness.approved === true;
+    $('#strategy-disable').hidden = readiness.approved !== true;
+    $('#strategy-enable').disabled = Number(readiness.categoryCount || 0) < 1 || Number(readiness.styleCount || 0) < 1 || readiness.orderUncertain === true;
+    renderStrategyRecords($('#strategy-categories'), strategy.categories || [], 'category');
+    renderStrategyRecords($('#strategy-styles'), strategy.styles || [], 'style');
+    renderCategoryProposals(strategy.proposals || []);
+    const proposalSettings = strategy.proposalSettings || {};
+    const proposalForm = $('#proposal-settings-form');
+    proposalForm.elements.namedItem('enabled').checked = proposalSettings.enabled === true;
+    proposalForm.elements.namedItem('intervalDays').value = String(proposalSettings.intervalDays || 30);
+    const nextRun = proposalSettings.nextRunAt ? new Date(proposalSettings.nextRunAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) : null;
+    $('#proposal-schedule-status').textContent = proposalSettings.enabled
+      ? `Job aktif dengan interval ${proposalSettings.intervalDays} hari. Run berikutnya: ${nextRun || 'belum dijadwalkan'}. Satu panggilan AI maksimal 400 token.`
+      : 'Job nonaktif. Saat diaktifkan, proposal pertama dijadwalkan setelah interval; tidak ada panggilan langsung.';
+  }
+
   function activateTab(name) {
     const button = $('.tab[data-tab="' + name + '"]');
     if (!button) return;
@@ -434,6 +512,7 @@
   function loadTabData(name) {
     if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (name === 'integrations' || name === 'ai') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
+    if (name === 'strategy') api('/api/content-strategy').then(renderContentStrategy).catch((error) => show('#global-error', errorText(error)));
   }
   syncSidebarViewport();
   sidebarViewport.addEventListener?.('change', syncSidebarViewport);
@@ -552,7 +631,10 @@
     const rows = posts.map((post) => {
       const tr = document.createElement('tr');
       const time = document.createElement('td'); time.textContent = post.scheduledAt || post.createdAt ? new Date(post.scheduledAt || post.createdAt).toLocaleString('id-ID') : '—';
-      const pillar = document.createElement('td'); pillar.textContent = post.pillar === 'ndi' ? 'Konten NDI' : post.pillar ? 'Riwayat lama' : '—';
+      const pillar = document.createElement('td');
+      pillar.textContent = post.contentStrategy?.category?.name
+        ? `${post.contentStrategy.category.name}${post.contentStrategy.style?.name ? ` · ${post.contentStrategy.style.name}` : ''}`
+        : post.pillar === 'ndi' ? 'Konten NDI' : post.pillar ? 'Riwayat lama' : '—';
       const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = statusLabels[post.status] || 'Belum diketahui'; statusCell.append(badge);
       const caption = document.createElement('td'); caption.textContent = post.caption || post.errorCode || '—';
       tr.append(time, pillar, statusCell, caption); return tr;
@@ -609,7 +691,7 @@
     const blockedForReadiness = automation.enabled && (automation.onboardingComplete !== true || !contentStrategyReady);
     $('#automation-label').textContent = blockedForReadiness ? 'Penerbitan diblokir' : automation.enabled ? 'Otomasi aktif' : 'Otomasi nonaktif';
     $('#automation-reason').textContent = !contentStrategyReady
-      ? (automation.contentStrategyReason || 'Penerbitan ditahan sampai mesin kategori dan gaya konten Fase B tersedia.')
+      ? (automation.contentStrategyReason || 'Periksa dan aktifkan strategi konten NDI sebelum mengaktifkan otomasi.')
       : blockedForReadiness
         ? 'Tinjau pengetahuan NDI, jeda otomasi, lalu aktifkan kembali secara manual setelah siap.'
         : automation.enabled ? 'Tugas berjalan sesuai jadwal.' : 'Tinjau pengetahuan NDI, hubungkan akun Threads testing di Tebar, dan konfigurasi penyedia AI.';
@@ -623,6 +705,7 @@
     $('#metric-failed').textContent = String(data.metrics?.attention ?? 0);
     $('#metric-services').textContent = String(data.metrics?.services ?? data.businessKnowledge?.services?.length ?? 0);
     renderOnboarding(data.onboarding); renderPosts(data.posts || []); renderActivity(data.activity || []); readSettings();
+    renderContentStrategy(data.contentStrategy || {});
   }
 
   async function refresh() {
@@ -1488,6 +1571,78 @@
         show('#global-success', 'Pengetahuan bisnis NDI disimpan dan disetujui untuk digunakan generator konten.'); await refreshAfterMutation(refresh);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
+  });
+
+  async function saveStrategyForm(form, kind, id = null) {
+    const fields = kind === 'category' ? ['name', 'guidance'] : ['name', 'instructions'];
+    const body = Object.fromEntries(fields.map((name) => [name, value(form, name).trim()]));
+    if (id !== null) body.active = Boolean(form.elements.namedItem('active')?.checked);
+    const path = kind === 'category' ? 'categories' : 'styles';
+    await api(`/api/content-strategy/${path}${id === null ? '' : `/${encodeURIComponent(id)}`}`, {
+      method: id === null ? 'POST' : 'PUT', body: JSON.stringify(body),
+    });
+  }
+  for (const [selector, kind] of [['#category-create-form', 'category'], ['#style-create-form', 'style']]) {
+    $(selector).addEventListener('submit', async (event) => {
+      event.preventDefault(); const form = event.currentTarget;
+      await withPending(event.submitter, async () => {
+        try { await saveStrategyForm(form, kind); form.reset(); show('#global-success', kind === 'category' ? 'Kategori konten ditambahkan.' : 'Gaya bahasa ditambahkan.'); await refreshAfterMutation(refresh); }
+        catch (error) { show('#global-error', errorText(error)); }
+      }, 'Menyimpan…', form);
+    });
+  }
+  for (const [selector, kind] of [['#strategy-categories', 'category'], ['#strategy-styles', 'style']]) {
+    const container = $(selector);
+    container.addEventListener('submit', async (event) => {
+      const form = event.target.closest('form.strategy-record'); if (!form) return;
+      event.preventDefault();
+      await withPending(event.submitter, async () => {
+        try { await saveStrategyForm(form, kind, form.dataset.id); show('#global-success', kind === 'category' ? 'Kategori diperbarui.' : 'Gaya diperbarui.'); await refreshAfterMutation(refresh); }
+        catch (error) { show('#global-error', errorText(error)); }
+      }, 'Menyimpan…', form);
+    });
+    container.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-action="archive"]'); if (!button) return;
+      const form = button.closest('form.strategy-record');
+      if (!confirmAction(`Arsipkan ${kind === 'category' ? 'kategori' : 'gaya'} ini? Histori dan slot yang sudah terikat tetap dipertahankan.`)) return;
+      await withPending(button, async () => {
+        try { await api(`/api/content-strategy/${kind === 'category' ? 'categories' : 'styles'}/${encodeURIComponent(form.dataset.id)}/archive`, { method: 'POST', body: '{}' }); show('#global-success', 'Item strategi diarsipkan.'); await refreshAfterMutation(refresh); }
+        catch (error) { show('#global-error', errorText(error)); }
+      }, 'Mengarsipkan…', form);
+    });
+  }
+  $('#strategy-enable').addEventListener('click', async (event) => {
+    if (!confirmAction('Aktifkan strategi konten setelah memeriksa kategori dan gaya? Otomasi harus dijeda. Tindakan ini tidak mengaktifkan scheduler atau menerbitkan konten.')) return;
+    await withPending(event.currentTarget, async () => {
+      try { await api('/api/content-strategy/enable', { method: 'POST', body: '{}' }); show('#global-success', 'Strategi konten diaktifkan. Otomasi tetap memerlukan aktivasi terpisah.'); await refreshAfterMutation(refresh); }
+      catch (error) { show('#global-error', errorText(error)); }
+    }, 'Mengaktifkan…');
+  });
+  $('#strategy-disable').addEventListener('click', async (event) => {
+    if (!confirmAction('Nonaktifkan strategi konten? Otomasi harus dijeda terlebih dahulu.')) return;
+    await withPending(event.currentTarget, async () => {
+      try { await api('/api/content-strategy/disable', { method: 'POST', body: '{}' }); show('#global-success', 'Strategi konten dinonaktifkan.'); await refreshAfterMutation(refresh); }
+      catch (error) { show('#global-error', errorText(error)); }
+    }, 'Menonaktifkan…');
+  });
+  $('#proposal-settings-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const form = event.currentTarget;
+    const enabled = form.elements.namedItem('enabled').checked;
+    if (enabled && !confirmAction('Aktifkan job terpisah yang menggunakan maksimal satu panggilan OpenRouter hingga 400 token per interval? Usulan tetap menunggu persetujuan admin dan tidak menerbitkan konten.')) return;
+    const intervalDays = Number(form.elements.namedItem('intervalDays').value);
+    await withPending(event.submitter, async () => {
+      try { await api('/api/content-strategy/proposals/config', { method: 'PUT', body: JSON.stringify({ enabled, intervalDays }) }); show('#global-success', enabled ? 'Job usulan kategori dijadwalkan setelah interval.' : 'Job usulan kategori dinonaktifkan.'); await refreshAfterMutation(refresh); }
+      catch (error) { show('#global-error', errorText(error)); }
+    }, 'Menyimpan…', form);
+  });
+  $('#category-proposals').addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action^="proposal-"]'); if (!button) return;
+    const decision = button.dataset.action.slice('proposal-'.length);
+    if (decision === 'approve' && !confirmAction('Setujui usulan ini sebagai kategori aktif? Perubahan ini tidak mengubah pengetahuan bisnis.')) return;
+    await withPending(button, async () => {
+      try { await api(`/api/content-strategy/proposals/${encodeURIComponent(button.dataset.id)}/${decision}`, { method: 'POST', body: '{}' }); show('#global-success', decision === 'approve' ? 'Usulan disetujui dan dibuat sebagai kategori.' : 'Usulan ditolak.'); await refreshAfterMutation(refresh); }
+      catch (error) { show('#global-error', errorText(error)); }
+    }, 'Memproses…');
   });
 
   $('#schedule-form').addEventListener('submit', async (event) => {

@@ -2,7 +2,7 @@
 
 ## Pemeriksaan lokal
 
-Gunakan Node.js 22.13 atau lebih baru untuk pemeriksaan pengembangan. Instal dependency lalu jalankan lint, full JavaScript typecheck, pemeriksaan sintaks, dan unit/HTTP tests:
+Gunakan Node.js 22.13 atau lebih baru untuk pemeriksaan pengembangan. Instal dependency lalu jalankan lint, full JavaScript typecheck, pemeriksaan sintaks, dan tes:
 
 ```sh
 npm ci
@@ -12,76 +12,55 @@ npm run check
 npm test
 ```
 
-`npm run typecheck` memeriksa seluruh `src/**/*.js` dengan opsi TypeScript yang dicatat di `tsconfig.typecheck.json`. Tanpa konfigurasi MySQL test, tes database akan dilewati. Tes provider memakai mock dan tidak boleh mempublikasikan ke Threads atau mengirim pesan ke grup Telegram operasional.
+`npm run typecheck` memeriksa seluruh `src/**/*.js` dengan opsi TypeScript di `tsconfig.typecheck.json`. Tanpa konfigurasi MySQL test, tes database dilewati. Tes provider menggunakan mock/fake dan tidak mempublikasikan ke Threads atau mengirim pesan Telegram.
 
-## Tes integrasi MySQL lokal
+## Tes MySQL disposable
 
-`compose.test.yaml` menjalankan hanya service MySQL test, tidak menjalankan aplikasi atau membuat koneksi ke network produksi. Service memakai database `bot_ndi_test`, volume `bot-ndi_test_mysql_data`, serta port loopback `127.0.0.1:3307` (ubah port dengan `TEST_DB_HOST_PORT` jika port itu sedang dipakai).
-
-Jalankan MySQL disposable dan arahkan tes destructive hanya ke database test tersebut:
+`compose.test.yaml` menjalankan MySQL test pada loopback. Gunakan project/schema khusus test, jangan gunakan database atau volume `bot-ndi` produksi, dan jangan menghapus Docker volume. Untuk tes migrasi, gunakan container MySQL disposable yang tidak memasang volume produksi; gunakan schema `bot_ndi_test_ndi_upgrade` hanya pada instance itu.
 
 ```sh
 export TEST_DB_HOST_PORT="${TEST_DB_HOST_PORT:-3307}"
 docker compose --project-name bot-ndi-test --file compose.test.yaml up -d --wait
-
-export NODE_ENV=test
-export ALLOW_DESTRUCTIVE_DB_TESTS=true
-export DB_HOST=127.0.0.1
-export DB_PORT="$TEST_DB_HOST_PORT"
-export DB_NAME=bot_ndi_test
-export DB_USER=bot_ndi_test
-export DB_PASSWORD=test-password-only
-export DB_ROOT_PASSWORD=root-test-password-only
-
-npm test
+export NODE_ENV=test ALLOW_DESTRUCTIVE_DB_TESTS=true
+export DB_HOST=127.0.0.1 DB_PORT="$TEST_DB_HOST_PORT"
+export DB_NAME=bot_ndi_test DB_USER=bot_ndi_test DB_PASSWORD=test-password-only
 npm run test:integration
 ```
 
-Nilai password tersebut hanya untuk test disposable. Jangan mengisi environment produksi atau memakai database/volume `bot_ndi`. Saat selesai, hentikan container tanpa menghapus volume:
+Untuk tes upgrade 021–022, set `DB_NAME=bot_ndi_test_ndi_upgrade` lalu jalankan:
 
 ```sh
-docker compose --project-name bot-ndi-test --file compose.test.yaml down
+node --test test/ndi-migration.mysql.integration.test.js
 ```
 
-Volume test mempertahankan data antar-run. Jika memang perlu membuang database test untuk mengulang dari keadaan kosong, pastikan container test sudah dihentikan, periksa nama volume, lalu hapus hanya volume tersebut:
+Tes destructive hanya boleh diarahkan ke schema test disposable. Saat selesai, hentikan service tanpa `-v`; data test boleh dibiarkan pada volume test. Jangan menjalankan perintah Docker volume remove, `down -v`, atau operasi reset terhadap volume.
 
-```sh
-docker volume inspect bot-ndi_test_mysql_data
-docker volume rm bot-ndi_test_mysql_data
-```
-
-Jangan jalankan `down -v` atau menghapus volume pada project lain.
-
-CI menjalankan test pada GitHub-hosted runner dengan MySQL service disposable yang baru untuk setiap job. CI juga menguji migrasi upgrade/concurrency pada schema terisolasi. Jangan menjalankan tes destructive terhadap MySQL produksi atau volume Compose persisten.
-
-## Upgrade migrasi bisnis NDI
-
-`test/ndi-migration.mysql.integration.test.js` hanya berjalan bila koneksi memakai loopback dan `DB_NAME=bot_ndi_test_ndi_upgrade`, dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true`. Tes menjalankan migrasi historis 001–020 pada schema disposable, menanam representasi legacy yang telah disanitasi, menerapkan migrasi 021, menjalankan ulang pernyataannya, lalu memeriksa arsip, status approval, fakta legacy, flag otomasi, kredensial, dan slot. Tes tidak memakai provider atau posting langsung.
-
-CI membuat schema khusus tersebut di MySQL service disposable. Untuk menjalankan lokal, arahkan environment tes ke MySQL disposable yang hanya tersedia pada `127.0.0.1`, buat schema `bot_ndi_test_ndi_upgrade`, lalu jalankan:
-
-```sh
-NODE_ENV=test ALLOW_DESTRUCTIVE_DB_TESTS=true \
-  DB_HOST=127.0.0.1 DB_PORT=3307 DB_NAME=bot_ndi_test_ndi_upgrade \
-  DB_USER=bot_ndi_test DB_PASSWORD=test-password-only \
-  node --test test/ndi-migration.mysql.integration.test.js
-```
-
-Gunakan kredensial test-only pada instance disposable tanpa volume produksi. Jangan mengarahkan variabel ini ke database `bot_ndi` atau database bersama.
+CI menjalankan schema MySQL disposable terisolasi per job. Tes upgrade menanam data legacy tersanitasi, menerapkan migrasi 021–022, memeriksa state/approval/strategi, dan menjalankan ulang migrasi. Tidak menggunakan provider eksternal atau DB produksi.
 
 ## Browser E2E NDI
 
-`npm run test:ndi:browser` menjalankan Chromium headless terhadap server lokal dan schema kosong `bot_ndi_browser_test` pada MySQL loopback. Test hanya memeriksa checklist readiness Fase B dan UI review slot `unknown`; `SCHEDULER_ENABLED` dan `EXTERNAL_INTEGRATIONS_ENABLED` tetap `false`, dan tidak ada panggilan provider. Arahkan `DB_NAME` ke schema browser test yang disposable dan jalankan dengan `NODE_ENV=test` serta `ALLOW_DESTRUCTIVE_DB_TESTS=true`. Tidak memakai schema `bot_ndi_test` yang juga dipakai integration suite.
+`npm run test:ndi:browser` menjalankan Chromium headless terhadap server lokal dan schema `bot_ndi_browser_test` di MySQL loopback. Scheduler dan external integrations tetap `false`; tidak ada provider call. Jalankan hanya terhadap DB disposable yang terpisah dari `bot_ndi_test`.
+
+Verifikasi branch B: **PASS, 3/3** dengan Chromium lokal dan MySQL disposable yang port-nya hanya dipetakan ke loopback `127.0.0.1`. Scheduler dan external integrations dimatikan; tes hanya memeriksa login/readiness dan recovery status `unknown`.
 
 ## Cakupan
 
-- Policy dan konfigurasi: timezone, jadwal, guardrails, validasi input, defaults nonaktif, dan kredensial yang tidak ditampilkan.
-- Auth dan HTTP: password hashing, login throttling, session, CSRF, same-origin, safe errors, health checks, dan dashboard.
-- Dispatcher dan provider: slot/idempotency, retry, pause/cancel, rekonsiliasi outcome yang tidak diketahui, serta adapter mock Tebar/OpenRouter/Telegram.
-- Database: migrasi, state durable, klaim serentak, notifikasi, webhook deduplication, dan pemulihan setelah koneksi/pool restart.
-- Browser: dashboard NDI, readiness gate kategori/gaya, label legacy yang hilang, serta unknown-slot evidence/recovery.
-- Deployment: workflow_run terverifikasi setelah CI push ke main, workflow_dispatch untuk operasi manual/rollback, guard kompatibilitas migrasi, image build lokal, pemeriksaan health/volume, dan SHA release yang tidak berubah.
+- Policy/konfigurasi: timezone, cadence, CTA URL, NDI guardrails, safe defaults, dan redaksi kredensial.
+- Auth/HTTP: password hashing, throttling, session, CSRF, same-origin, health, dashboard, dan category/style routes.
+- Strategi konten: 8 kategori, 7 gaya, CRUD/archive/audit, uniform independent selection, provider-confirmed rotation, durable slot snapshot, empty-state fail-closed, AI proposal gate/default OFF/failure isolation.
+- Dispatcher/provider: slot/idempotency, retry, pause/cancel, unknown reconciliation, mocked Tebar/OpenRouter/Telegram, dan tidak blind replay.
+- Database: migration upgrade/rerun, state retention, concurrent claims, publication timestamp ordering, audit, dan conflict handling.
+- Deployment checks: workflow/source contract, shell syntax, Compose validation, dan release compatibility. Docker image build branch B PASS menggunakan `node:22-bookworm-slim` lokal setelah base image tersedia.
 
-Tes mock tidak memverifikasi permission provider, gateway, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Jalankan validasi provider dan ingress hanya pada environment yang memang disiapkan operator; jangan mengirim post atau notifikasi operasional sebagai bagian dari tes otomatis.
+## Hasil verifikasi branch Phase B-only
+
+- `npm test`: 475 total, 450 passed, 0 failed, 25 skipped; tes MySQL yang di-skip pada mode lokal dijalankan terpisah di database disposable.
+- `test/deploy-homelab.test.js`: 30 passed, 0 failed.
+- `npm run test:integration`: 94 passed, 0 failed, 0 skipped; MySQL configuration check terpisah: 1 passed.
+- `test/ndi-migration.mysql.integration.test.js`: 1 passed pada MySQL disposable; publication-resolution MySQL: 10/10 passed.
+- `npm run lint`, `npm run typecheck`, `npm run check`, Compose config validation, dan Docker build: PASS.
+- Browser E2E: 3/3 PASS. GitHub CI Phase B belum berjalan karena PR belum dibuat; `actionlint` tidak terpasang.
+
+Tes mock tidak memverifikasi permission provider, Cloudflare Tunnel, proxy headers, deployment LXC, atau domain publik. Tidak menjalankan posting nyata, mengaktifkan scheduler, atau menghapus volume Docker.
 
 Lihat [Docker](DOCKER.md) untuk Compose lokal dan [Panduan Deployment](DEPLOYMENT.md) untuk pemeriksaan LXC/ingress.

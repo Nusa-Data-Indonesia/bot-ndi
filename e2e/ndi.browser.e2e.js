@@ -138,10 +138,10 @@ test('NDI dashboard readiness and unknown-publication review on disposable MySQL
     await page.locator('#login-password').fill(PASSWORD);
     await page.getByRole('button', { name: 'Masuk' }).click();
     await page.locator('#app-view:not([hidden])').waitFor();
-    await page.locator('#automation-reason').getByText(/Fase B/u).waitFor();
+    await page.locator('#automation-reason').getByText(/Tinjau dan aktifkan strategi/u).waitFor();
     assert.match(await page.locator('#automation-label').innerText(), /Otomasi nonaktif/u);
-    assert.match(await page.locator('#automation-reason').innerText(), /mesin kategori dan gaya konten Fase B/u);
-    assert.match(await page.locator('#onboarding-list').innerText(), /Mesin kategori dan gaya konten \(Fase B\)/u);
+    assert.match(await page.locator('#automation-reason').innerText(), /kategori dan gaya diperiksa/u);
+    assert.match(await page.locator('#onboarding-list').innerText(), /Strategi konten NDI disetujui/u);
     assert.match(await page.locator('#onboarding-list').innerText(), /Wajib · Belum selesai/u);
     const data = await (await page.request.get(`${baseUrl}/api/dashboard`)).json();
     assert.equal(data.automation.contentStrategyReady, false);

@@ -6,7 +6,7 @@ const { DateTime } = require('luxon');
 const { isInActiveWindow, normalizeScheduleInterval } = require('./policy');
 const { validateNdiSettings } = require('./ndi-settings');
 const { validateBusinessKnowledge } = require('./business-knowledge');
-const { CONTENT_STRATEGY_READINESS } = require('./content-strategy-readiness');
+const { contentStrategyReadiness, selectUniform, validateStrategyInput } = require('./content-strategy');
 
 const STALE_PUBLISHING_AFTER_MS = 120_000;
 
@@ -41,10 +41,23 @@ function normalizeCompletedAt(value) {
   if (!parsed.isValid) throw Object.assign(new TypeError('completedAt must be a valid ISO timestamp'), { code: 'INVALID_COMPLETED_AT' });
   return parsed.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
 }
+function normalizeProviderPublishedAt(value) {
+  if (value === null) return null;
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw Object.assign(new TypeError('providerPublishedAt must be a valid date'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+    return DateTime.fromJSDate(value, { zone: 'utc' }).toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+  }
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+    throw Object.assign(new TypeError('providerPublishedAt must be an ISO timestamp, Date, or null'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+  }
+  const parsed = DateTime.fromISO(value, { setZone: true });
+  if (!parsed.isValid) throw Object.assign(new TypeError('providerPublishedAt must be a valid ISO timestamp'), { code: 'INVALID_PROVIDER_PUBLISHED_AT' });
+  return parsed.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+}
 
 /**
  * @typedef {{ provider: 'tebar' | 'openrouter', profileId: string | null, accountId: string | null, reasonCode: string, slotId?: string | null }} ProviderHold
- * @typedef {{ status: 'publishing' | 'unknown' | 'published' | 'failed' | 'partial' | 'canceled', providerPostId?: string | null, providerStatus?: string | null, errorCode?: string | null, completedAt?: Date | string | null }} PublicationOutcomePatch
+ * @typedef {{ status: 'publishing' | 'unknown' | 'published' | 'failed' | 'partial' | 'canceled', providerPostId?: string | null, providerStatus?: string | null, errorCode?: string | null, completedAt?: Date | string | null, providerPublishedAt?: Date | string | null }} PublicationOutcomePatch
  * @typedef {import('mysql2/promise').Pool | import('mysql2/promise').PoolConnection} RepositoryConnection
  */
 
@@ -83,6 +96,38 @@ function createRepository(pool) {
   async function audit(connection, adminId, action, details = {}) {
     await connection.execute('INSERT INTO audit_logs (admin_id, action, details_json) VALUES (?, ?, ?)', [adminId || null, action, JSON.stringify(details)]);
   }
+  async function getStrategyStatus(connection) {
+    const [[counts]] = await selectQuery(connection, `SELECT
+      (SELECT COUNT(*) FROM content_categories WHERE active=TRUE AND archived_at IS NULL) AS category_count,
+      (SELECT COUNT(*) FROM content_styles WHERE active=TRUE AND archived_at IS NULL) AS style_count`);
+    const [[strategy]] = await selectQuery(connection, 'SELECT enabled FROM content_strategy_settings WHERE id=1');
+    const [[missingTime]] = await selectQuery(connection, `SELECT id FROM slots WHERE status='published'
+      AND content_category_id IS NOT NULL AND (provider_published_at IS NULL OR YEAR(provider_published_at)<1000) LIMIT 1`);
+    let latestCategoryId = null;
+    let orderUncertain = Boolean(missingTime);
+    if (!orderUncertain) {
+      const [[latest]] = await selectQuery(connection, `SELECT provider_published_at,
+        COUNT(DISTINCT content_category_id) AS category_count
+        FROM slots WHERE status='published' AND content_category_id IS NOT NULL
+        GROUP BY provider_published_at ORDER BY provider_published_at DESC LIMIT 1`);
+      if (latest && Number(latest.category_count) > 1) orderUncertain = true;
+      else if (latest) {
+        const [[last]] = await selectQuery(connection, `SELECT content_category_id FROM slots
+          WHERE status='published' AND content_category_id IS NOT NULL AND provider_published_at=?
+          ORDER BY id DESC LIMIT 1`, [latest.provider_published_at]);
+        latestCategoryId = last?.content_category_id == null ? null : String(last.content_category_id);
+      }
+    }
+    const readiness = contentStrategyReadiness({
+      approved: strategy?.enabled === 1 || strategy?.enabled === true,
+      categoryCount: Number(counts?.category_count || 0),
+      styleCount: Number(counts?.style_count || 0),
+      orderUncertain,
+    });
+    return { ...readiness, approved: strategy?.enabled === 1 || strategy?.enabled === true,
+      categoryCount: Number(counts?.category_count || 0), styleCount: Number(counts?.style_count || 0),
+      orderUncertain, latestCategoryId };
+  }
   function runtimeSettings(row) {
     const stored = json(row?.settings_json);
     const knowledge = json(row?.business_knowledge_json, null);
@@ -108,7 +153,205 @@ function createRepository(pool) {
     const row = rows[0];
     const settings = runtimeSettings(row);
     const history = await listSlots(1000);
-    return { settings, businessKnowledge: settings.businessKnowledge, businessKnowledgeApproved: Boolean(row?.business_knowledge_approved), contentStrategyReady: CONTENT_STRATEGY_READINESS.ready, contentStrategyReason: CONTENT_STRATEGY_READINESS.message, facts: [], history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+    const strategy = await getStrategyStatus(pool);
+    return { settings, businessKnowledge: settings.businessKnowledge, businessKnowledgeApproved: Boolean(row?.business_knowledge_approved),
+      contentStrategyReady: strategy.ready, contentStrategyReason: strategy.message, contentStrategyReasonCode: strategy.reasonCode,
+      contentStrategy: strategy, facts: [], history, automationEnabled: Boolean(row?.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+  }
+  async function getContentStrategyState() {
+    const [categories] = await selectQuery(pool, `SELECT id,slug,name,guidance,active,archived_at,created_at,updated_at
+      FROM content_categories ORDER BY id`);
+    const [styles] = await selectQuery(pool, `SELECT id,slug,name,instructions,active,archived_at,created_at,updated_at
+      FROM content_styles ORDER BY id`);
+    const [proposals] = await selectQuery(pool, `SELECT id,name,guidance,status,source,reviewed_by,reviewed_at,created_at
+      FROM category_proposals ORDER BY id DESC LIMIT 100`);
+    const [[proposalSettings]] = await selectQuery(pool, `SELECT enabled,interval_days,next_run_at,last_started_at,last_completed_at,last_error_code
+      FROM category_proposal_settings WHERE id=1`);
+    const strategy = await getStrategyStatus(pool);
+    return {
+      categories: categories.map((item) => ({ ...item, id: String(item.id), active: Boolean(item.active), archivedAt: item.archived_at, createdAt: item.created_at, updatedAt: item.updated_at })),
+      styles: styles.map((item) => ({ ...item, id: String(item.id), active: Boolean(item.active), archivedAt: item.archived_at, createdAt: item.created_at, updatedAt: item.updated_at })),
+      proposals: proposals.map((item) => ({ ...item, id: String(item.id), reviewedBy: item.reviewed_by == null ? null : String(item.reviewed_by), reviewedAt: item.reviewed_at, createdAt: item.created_at })),
+      proposalSettings: proposalSettings ? { enabled: Boolean(proposalSettings.enabled), intervalDays: Number(proposalSettings.interval_days), nextRunAt: proposalSettings.next_run_at, lastStartedAt: proposalSettings.last_started_at, lastCompletedAt: proposalSettings.last_completed_at, lastErrorCode: proposalSettings.last_error_code } : { enabled: false, intervalDays: 30 },
+      readiness: strategy,
+    };
+  }
+  function strategyTable(kind) {
+    if (kind === 'category') return { table: 'content_categories', detail: 'guidance', event: 'content_category' };
+    if (kind === 'style') return { table: 'content_styles', detail: 'instructions', event: 'content_style' };
+    throw Object.assign(new Error('INVALID_CONTENT_STRATEGY_KIND'), { code: 'INVALID_CONTENT_STRATEGY_KIND', status: 400 });
+  }
+  function strategySlug(name) {
+    return name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'content-strategy';
+  }
+  async function saveContentStrategyRecord(kind, id, input, adminId) {
+    const config = strategyTable(kind);
+    const checked = validateStrategyInput(input, { kind });
+    if (!checked.valid) throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400, fields: checked.errors });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      let recordId = id;
+      let slug = strategySlug(checked.record.name);
+      if (id !== null && id !== undefined) {
+        if (!/^[1-9]\d{0,19}$/.test(String(id))) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+        const [[existing]] = await selectQuery(c, `SELECT id,slug,archived_at FROM ${config.table} WHERE id=? FOR UPDATE`, [id]);
+        if (!existing || existing.archived_at) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+        recordId = existing.id;
+        slug = existing.slug;
+        await c.execute(`UPDATE ${config.table} SET name=?,${config.detail}=?,active=? WHERE id=?`, [checked.record.name, checked.record[config.detail], checked.record.active, recordId]);
+      } else {
+        const [insert] = await mutationQuery(c, `INSERT INTO ${config.table} (slug,name,${config.detail},active) VALUES (?,?,?,?)`, [slug, checked.record.name, checked.record[config.detail], checked.record.active]);
+        recordId = insert.insertId;
+      }
+      await audit(c, adminId, `${config.event}.${id == null ? 'created' : 'updated'}`, { id: String(recordId), slug, active: checked.record.active });
+      await c.commit();
+      return { id: String(recordId), slug, ...checked.record };
+    } catch (error) {
+      await c.rollback();
+      if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('CONTENT_STRATEGY_DUPLICATE'), { code: 'CONTENT_STRATEGY_DUPLICATE', status: 409 });
+      throw error;
+    } finally { c.release(); }
+  }
+  async function setContentStrategyRecordActive(kind, id, active, adminId) {
+    const config = strategyTable(kind);
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || typeof active !== 'boolean') throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [updated] = await mutationQuery(c, `UPDATE ${config.table} SET active=? WHERE id=? AND archived_at IS NULL`, [active, id]);
+      if (!updated.affectedRows) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+      await audit(c, adminId, `${config.event}.${active ? 'activated' : 'deactivated'}`, { id: String(id) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function archiveContentStrategyRecord(kind, id, adminId) {
+    const config = strategyTable(kind);
+    if (!/^[1-9]\d{0,19}$/.test(String(id))) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [updated] = await mutationQuery(c, `UPDATE ${config.table} SET active=FALSE,archived_at=COALESCE(archived_at,UTC_TIMESTAMP(3)) WHERE id=? AND archived_at IS NULL`, [id]);
+      if (!updated.affectedRows) throw Object.assign(new Error('CONTENT_STRATEGY_NOT_FOUND'), { code: 'CONTENT_STRATEGY_NOT_FOUND', status: 404 });
+      await audit(c, adminId, `${config.event}.archived`, { id: String(id) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function setContentStrategyEnabled(enabled, adminId) {
+    if (typeof enabled !== 'boolean') throw Object.assign(new Error('INVALID_CONTENT_STRATEGY'), { code: 'INVALID_CONTENT_STRATEGY', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[settings]] = await selectQuery(c, 'SELECT automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (settings?.automation_enabled) throw Object.assign(new Error('AUTOMATION_MUST_BE_PAUSED'), { code: 'AUTOMATION_MUST_BE_PAUSED', status: 409 });
+      if (enabled) {
+        const readiness = await getStrategyStatus(c);
+        if (readiness.categoryCount < 1 || readiness.styleCount < 1 || readiness.orderUncertain) {
+          throw Object.assign(new Error(readiness.reasonCode || 'CONTENT_STRATEGY_NOT_READY'), { code: readiness.reasonCode || 'CONTENT_STRATEGY_NOT_READY', status: 409 });
+        }
+      }
+      await c.execute('UPDATE content_strategy_settings SET enabled=?,enabled_by=?,enabled_at=IF(?,UTC_TIMESTAMP(3),enabled_at) WHERE id=1', [enabled, enabled ? adminId : null, enabled]);
+      await audit(c, adminId, enabled ? 'content_strategy.enabled' : 'content_strategy.disabled', {});
+      await c.commit();
+      return { enabled };
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function saveCategoryProposalSettings({ enabled, intervalDays }, adminId) {
+    if (typeof enabled !== 'boolean' || !Number.isInteger(intervalDays) || intervalDays < 30 || intervalDays > 365) {
+      throw Object.assign(new Error('INVALID_PROPOSAL_SETTINGS'), { code: 'INVALID_PROPOSAL_SETTINGS', status: 400 });
+    }
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[existing]] = await selectQuery(c, 'SELECT enabled FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (enabled) {
+        const nextRunAt = existing?.enabled ? undefined : new Date(Date.now() + intervalDays * 86_400_000);
+        if (nextRunAt) await c.execute('UPDATE category_proposal_settings SET enabled=TRUE,interval_days=?,next_run_at=?,lease_token=NULL,lease_until=NULL,last_error_code=NULL WHERE id=1', [intervalDays, nextRunAt]);
+        else await c.execute('UPDATE category_proposal_settings SET enabled=TRUE,interval_days=?,next_run_at=COALESCE(next_run_at,?) WHERE id=1', [intervalDays, new Date(Date.now() + intervalDays * 86_400_000)]);
+      } else {
+        await c.execute('UPDATE category_proposal_settings SET enabled=FALSE,interval_days=?,next_run_at=NULL,lease_token=NULL,lease_until=NULL WHERE id=1', [intervalDays]);
+      }
+      await audit(c, adminId, 'category_proposal_settings.updated', { enabled, intervalDays });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function claimCategoryProposalRun({ now = new Date(), leaseMs = 120_000 } = {}) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[config]] = await selectQuery(c, 'SELECT enabled,interval_days,next_run_at,lease_token,lease_until FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      const current = now instanceof Date ? now : new Date(now);
+      if (!config?.enabled || !config.next_run_at || new Date(config.next_run_at) > current
+        || config.lease_until && new Date(config.lease_until) > current) {
+        await c.commit(); return null;
+      }
+      const [[state]] = await selectQuery(c, 'SELECT business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1');
+      if (!state?.business_knowledge_approved) { await c.commit(); return null; }
+      const [[integration]] = await selectQuery(c, 'SELECT status,model FROM integration_config WHERE id=1');
+      if (integration?.status !== 'ACTIVE' || !integration.model) { await c.commit(); return null; }
+      const [categories] = await selectQuery(c, 'SELECT LEFT(name,120) AS name,LEFT(guidance,200) AS guidance FROM content_categories WHERE active=TRUE AND archived_at IS NULL ORDER BY id LIMIT 30');
+      const token = randomUUID();
+      const nextRunAt = new Date(current.getTime() + Number(config.interval_days) * 86_400_000);
+      await c.execute(`UPDATE category_proposal_settings SET lease_token=?,lease_until=?,last_started_at=?,next_run_at=?,last_error_code=NULL WHERE id=1`, [token, new Date(current.getTime() + leaseMs), current, nextRunAt]);
+      await c.commit();
+      return { token, categories, knowledge: json(state.business_knowledge_json, {}), intervalDays: Number(config.interval_days), model: integration.model };
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function finishCategoryProposalRun({ token, proposals = [], errorCode = null, now = new Date() }) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[config]] = await selectQuery(c, 'SELECT lease_token FROM category_proposal_settings WHERE id=1 FOR UPDATE', [], 'query');
+      if (!config || config.lease_token !== token) { await c.commit(); return false; }
+      if (!errorCode) {
+        const [existing] = await selectQuery(c, `SELECT name FROM content_categories UNION ALL SELECT name FROM category_proposals WHERE status='pending'`);
+        const names = new Set(existing.map((item) => String(item.name).trim().toLocaleLowerCase('id')));
+        for (const proposal of proposals.slice(0, 3)) {
+          const checked = validateStrategyInput(proposal, { kind: 'category' });
+          if (!checked.valid || names.has(checked.record.name.toLocaleLowerCase('id'))) continue;
+          names.add(checked.record.name.toLocaleLowerCase('id'));
+          await c.execute("INSERT INTO category_proposals (name,guidance,status,source) VALUES (?,?,'pending','openrouter')", [checked.record.name, checked.record.guidance]);
+        }
+      }
+      await c.execute('UPDATE category_proposal_settings SET lease_token=NULL,lease_until=NULL,last_completed_at=?,last_error_code=? WHERE id=1 AND lease_token=?', [now, errorCode, token]);
+      await audit(c, null, errorCode ? 'category_proposal.job_failed' : 'category_proposal.job_completed', { errorCode, count: errorCode ? 0 : Math.min(3, proposals.length) });
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function reviewCategoryProposal(id, decision, adminId) {
+    if (!/^[1-9]\d{0,19}$/.test(String(id)) || !['approve', 'reject'].includes(decision)) throw Object.assign(new Error('INVALID_CATEGORY_PROPOSAL'), { code: 'INVALID_CATEGORY_PROPOSAL', status: 400 });
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[proposal]] = await selectQuery(c, 'SELECT id,name,guidance,status FROM category_proposals WHERE id=? FOR UPDATE', [id]);
+      if (!proposal) throw Object.assign(new Error('CATEGORY_PROPOSAL_NOT_FOUND'), { code: 'CATEGORY_PROPOSAL_NOT_FOUND', status: 404 });
+      if (proposal.status !== 'pending') throw Object.assign(new Error('CATEGORY_PROPOSAL_ALREADY_REVIEWED'), { code: 'CATEGORY_PROPOSAL_ALREADY_REVIEWED', status: 409 });
+      if (decision === 'approve') {
+        const slug = strategySlug(proposal.name);
+        const [[duplicate]] = await selectQuery(c, 'SELECT id FROM content_categories WHERE slug=? OR LOWER(name)=LOWER(?) LIMIT 1', [slug, proposal.name]);
+        if (duplicate) throw Object.assign(new Error('CONTENT_STRATEGY_DUPLICATE'), { code: 'CONTENT_STRATEGY_DUPLICATE', status: 409 });
+        const [insert] = await mutationQuery(c, 'INSERT INTO content_categories (slug,name,guidance,active) VALUES (?,?,?,TRUE)', [slug, proposal.name, proposal.guidance]);
+        await c.execute("UPDATE category_proposals SET status='approved',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='pending'", [adminId, id]);
+        await audit(c, adminId, 'category_proposal.approved', { proposalId: String(id), categoryId: String(insert.insertId) });
+      } else {
+        await c.execute("UPDATE category_proposals SET status='rejected',reviewed_by=?,reviewed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='pending'", [adminId, id]);
+        await audit(c, adminId, 'category_proposal.rejected', { proposalId: String(id) });
+      }
+      await c.commit();
+      return true;
+    } catch (error) { await c.rollback(); throw error; }
+    finally { c.release(); }
   }
   async function saveSettings(settings, adminId) {
     const connection = await pool.getConnection();
@@ -298,7 +541,7 @@ function createRepository(pool) {
   }
   async function deleteSession(tokenHash) { await pool.execute('DELETE FROM sessions WHERE token_hash=?', [tokenHash]); }
   async function deleteAdminSessions(adminId) { await pool.execute('DELETE FROM sessions WHERE admin_id=?', [adminId]); }
-  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),createdAt:r.created_at,completedAt:r.completed_at})); }
+  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,content_strategy_json,provider_published_at,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),contentStrategy:json(r.content_strategy_json,null),providerPublishedAt:r.provider_published_at,createdAt:r.created_at,completedAt:r.completed_at})); }
   async function listActivity(limit=100) { const [rows]=await selectQuery(pool, 'SELECT event,details_json,created_at FROM activity_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.event,...json(r.details_json),createdAt:r.created_at})); }
   async function healthCheck() { await selectQuery(pool, 'SELECT 1'); return true; }
   async function listAudit(limit=100) { const [rows]=await selectQuery(pool, 'SELECT action,details_json,created_at FROM audit_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.action,...json(r.details_json),createdAt:r.created_at})); }
@@ -311,6 +554,8 @@ function createRepository(pool) {
       const [[current]] = await selectQuery(c, 'SELECT settings_json,business_knowledge_json,business_knowledge_approved,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(current?.settings_json);
       if (enabled) {
+        const strategy = await getStrategyStatus(c);
+        if (!strategy.ready) throw Object.assign(new Error(strategy.reasonCode || 'CONTENT_STRATEGY_NOT_READY'), { code: strategy.reasonCode || 'CONTENT_STRATEGY_NOT_READY', status: 409 });
         const businessSettings = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: json(current?.business_knowledge_json, {}) });
         if (current?.business_knowledge_approved !== 1 && current?.business_knowledge_approved !== true || !businessSettings.valid) {
           throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
@@ -387,19 +632,28 @@ function createRepository(pool) {
       const settings = json(state?.settings_json);
       const knowledge = json(state?.business_knowledge_json, {});
       const validated = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: knowledge });
+      const strategyStatus = await getStrategyStatus(c);
       const sessionId = settings.automationSessionId;
       if (!state?.automation_enabled || state.business_knowledge_approved !== 1 && state.business_knowledge_approved !== true
-        || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
+        || !strategyStatus.ready || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
         || integration?.status !== 'ACTIVE' || !integration.model || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
+        if (state?.automation_enabled && !strategyStatus.ready) { await c.commit(); return { blocked: strategyStatus.reasonCode }; }
         await c.rollback();
         return null;
       }
       if (await hasProviderHold(c, integration.profile_id, integration.account_id)) { await c.commit(); return null; }
       const [[inFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
       if (inFlight) { await c.commit(); return null; }
-      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
+      let strategySnapshot = json(slot.content_strategy_json, null);
+      if (slot.status === 'ready' && (!strategySnapshot?.category?.id || !strategySnapshot?.style?.id)) {
+        await c.execute("UPDATE slots SET status='canceled',error_code='content_strategy_snapshot_missing',completed_at=UTC_TIMESTAMP(3) WHERE id=? AND status='ready'", [slot.id]);
+        await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'slot_not_published',?)", [slot.id, JSON.stringify({ code: 'content_strategy_snapshot_missing' })]);
+        await c.commit();
+        return { blocked: 'CONTENT_STRATEGY_SNAPSHOT_MISSING' };
+      }
       if (!slot.tebar_profile_id || !slot.tebar_account_id || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id) {
         await c.execute("UPDATE slots SET status='canceled',error_code='target_snapshot_missing',completed_at=UTC_TIMESTAMP(3) WHERE id=? AND status IN ('pending','ready')", [slot.id]);
         await c.commit();
@@ -418,12 +672,23 @@ function createRepository(pool) {
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(settings)]);
       }
       if (slot.status === 'pending') {
+        const [categories] = await selectQuery(c, 'SELECT id,slug,name,guidance,active,archived_at FROM content_categories WHERE active=TRUE AND archived_at IS NULL ORDER BY id FOR UPDATE', [], 'query');
+        const [styles] = await selectQuery(c, 'SELECT id,slug,name,instructions,active,archived_at FROM content_styles WHERE active=TRUE AND archived_at IS NULL ORDER BY id FOR UPDATE', [], 'query');
+        const eligible = categories.length > 1 && strategyStatus.latestCategoryId
+          ? categories.filter((entry) => String(entry.id) !== strategyStatus.latestCategoryId) : categories;
+        const selectedCategory = selectUniform(eligible);
+        const selectedStyle = selectUniform(styles);
+        if (!selectedCategory || !selectedStyle) { await c.commit(); return { blocked: categories.length ? 'CONTENT_STYLES_EMPTY' : 'CONTENT_CATEGORIES_EMPTY' }; }
+        strategySnapshot = {
+          category: { id: String(selectedCategory.id), slug: selectedCategory.slug, name: selectedCategory.name, guidance: selectedCategory.guidance },
+          style: { id: String(selectedStyle.id), slug: selectedStyle.slug, name: selectedStyle.name, instructions: selectedStyle.instructions },
+        };
         await c.execute('INSERT INTO generation_slot_claims (slot_id,claimed_at) VALUES (?,?)', [slot.id, now]);
-        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.version, slot.id]);
+        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,model_config_version=?,content_category_id=?,content_style_id=?,content_strategy_json=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.version, selectedCategory.id, selectedStyle.id, JSON.stringify(strategySnapshot), slot.id]);
       }
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, contentStrategy: strategySnapshot, categoryId: strategySnapshot.category.id, styleId: strategySnapshot.style.id, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -528,8 +793,10 @@ function createRepository(pool) {
       await c.beginTransaction();
       const [[state]]=await selectQuery(c, 'SELECT automation_enabled,settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(state?.settings_json).automationSessionId;
-      const [[slot]]=await selectQuery(c, 'SELECT automation_session_id,status FROM slots WHERE id=? FOR UPDATE',[id]);
-      if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating') { await c.rollback(); return false; }
+      const [[slot]]=await selectQuery(c, 'SELECT automation_session_id,status,content_category_id,content_style_id,content_strategy_json FROM slots WHERE id=? FOR UPDATE',[id]);
+      const strategy = json(slot?.content_strategy_json, null);
+      if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating'
+        || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id) { await c.rollback(); return false; }
       const [updated]=await mutationQuery(c, "UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),JSON.stringify(factVersions),contentSafetyHash,id,sessionId]);
       await c.commit();
       return updated.affectedRows===1;
@@ -543,9 +810,11 @@ function createRepository(pool) {
       const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
+      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
       const payload = json(slot?.request_payload);
-      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || settings.business_knowledge_approved!==1&&settings.business_knowledge_approved!==true || !sessionId || slot.automation_session_id!==sessionId
+      const strategy = json(slot?.content_strategy_json, null);
+      if (!slot || slot.status !== 'ready' || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id
+        || !settings?.automation_enabled || settings.business_knowledge_approved!==1&&settings.business_knowledge_approved!==true || !sessionId || slot.automation_session_id!==sessionId
         || integration?.status !== 'ACTIVE' || !slot.tebar_profile_id || !slot.tebar_account_id
         || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id
         || payload?.targets?.length !== 1 || payload.targets[0]?.account_id !== slot.tebar_account_id) { await c.rollback(); return false; }
@@ -616,10 +885,10 @@ function createRepository(pool) {
         if (!['publishing', 'unknown', 'published', 'failed', 'partial', 'canceled'].includes(patch?.status)) {
           throw new TypeError('publication outcome status is invalid');
         }
-        const allowed = { status: 'status', providerPostId: 'provider_post_id', providerStatus: 'provider_status', errorCode: 'error_code', completedAt: 'completed_at' };
-        const keys = Object.keys(patch || {}).filter((key) => allowed[key]);
+        const allowed = { status: 'status', providerPostId: 'provider_post_id', providerStatus: 'provider_status', errorCode: 'error_code', completedAt: 'completed_at', providerPublishedAt: 'provider_published_at' };
+        const keys = Object.keys(patch || {}).filter((key) => allowed[key] && !(key === 'providerPublishedAt' && patch[key] == null));
         if (!keys.length) throw new TypeError('publication outcome is required');
-        const values = [...keys.map((key) => key === 'completedAt' ? normalizeCompletedAt(patch[key]) : patch[key]), id];
+        const values = [...keys.map((key) => key === 'completedAt' ? normalizeCompletedAt(patch[key]) : key === 'providerPublishedAt' ? normalizeProviderPublishedAt(patch[key]) : patch[key]), id];
         await c.execute(
           `UPDATE slots SET ${keys.map((key) => `${allowed[key]}=?`).join(',')} WHERE id=? AND status='publishing' AND provider_post_id IS NULL`,
           values,
@@ -687,10 +956,10 @@ function createRepository(pool) {
   }
   async function updateSlot(id,patch) {
     if (patch.status === 'admin_closed_unknown') throw publicationError('PUBLICATION_RESOLUTION_REQUIRED');
-    const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};
-    const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;
+    const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at',providerPublishedAt:'provider_published_at'};
+    const keys=Object.keys(patch).filter(k=>allowed[k] && !(k==='providerPublishedAt' && patch[k] == null));if(!keys.length)return;
     const sql=keys.map(k=>`${allowed[k]}=?`).join(',');
-    const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id];
+    const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):k==='providerPublishedAt'?normalizeProviderPublishedAt(patch[k]):patch[k]),id];
     const guarded=typeof patch.status==='string';
     const conflictGuard = guarded && patch.status !== 'published'
       ? " AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')" : '';
@@ -699,6 +968,20 @@ function createRepository(pool) {
     if(!['published','failed','partial','canceled'].includes(patch.status)){const [updated]=await mutationQuery(pool, `UPDATE slots SET ${sql}${where}`,values);return updated.affectedRows>0;}
     const c=await pool.getConnection();try{
       await c.beginTransaction();
+      if (patch.providerPublishedAt != null) {
+        const [[current]] = await selectQuery(c, 'SELECT provider_published_at FROM slots WHERE id=? FOR UPDATE', [id]);
+        const incoming = normalizeProviderPublishedAt(patch.providerPublishedAt);
+        const currentValue = current?.provider_published_at;
+        const currentTime = currentValue instanceof Date ? currentValue.getTime()
+          : typeof currentValue === 'string' ? Date.parse(`${currentValue.replace(' ', 'T')}Z`) : NaN;
+        const incomingTime = Date.parse(`${incoming.replace(' ', 'T')}Z`);
+        if (Number.isFinite(currentTime) && currentTime !== incomingTime) {
+          await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status NOT IN ('admin_closed_unknown')", [id]);
+          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)", [id, JSON.stringify({ code: 'provider_timestamp_conflict' })]);
+          await c.commit();
+          return false;
+        }
+      }
       const [updated]=await mutationQuery(c, `UPDATE slots SET ${sql}${where}`,values);
       if(updated.affectedRows) await suppressPendingNotices(c,id,patch.status);
       else if(patch.status==='published') {
@@ -939,7 +1222,7 @@ function createRepository(pool) {
       const dataAccount = typeof accountValue === 'string' ? accountValue : null;
       const postId=data.post_id||data.id;
       const [[eventSlot]]=typeof postId==='string'&&eventType.startsWith('post.')
-        ? await selectQuery(c, 'SELECT id,automation_session_id,status,provider_status,tebar_profile_id,tebar_account_id FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]) : [[]];
+        ? await selectQuery(c, 'SELECT id,automation_session_id,status,provider_status,provider_published_at,tebar_profile_id,tebar_account_id FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]) : [[]];
       const postMatches=Boolean(eventSlot?.tebar_profile_id && eventSlot?.tebar_account_id
         && eventSlot.tebar_profile_id===profileId && eventSlot.tebar_account_id===dataAccount);
       const expectedAccount=eventSlot?.tebar_account_id;
@@ -947,9 +1230,9 @@ function createRepository(pool) {
         const targetMatches= target.account_id===expectedAccount
           && (!target.platform||String(target.platform).toLowerCase()==='threads');
         const value=data.published_at||(targetMatches?target.published_at:null);
-        if(typeof value!=='string'&&!(value instanceof Date))return null;
-        const parsed=new Date(value);
-        return Number.isFinite(parsed.getTime())?parsed:null;
+        if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
+        try { return new Date(`${normalizeProviderPublishedAt(value).replace(' ', 'T')}Z`); }
+        catch { return null; }
       })();
       let activeSessionCanceledPost=false;
       let staleTerminalCancellation=false;
@@ -961,18 +1244,23 @@ function createRepository(pool) {
         const terminalStatuses=['published','failed','partial','canceled','skipped'];
         const slotIsTerminal=terminalStatuses.includes(slot?.status);
         const conflictingPublication=slotIsTerminal&&slot.status!=='published'&&providerStatus==='published';
+        const currentProviderValue = slot?.provider_published_at;
+        const currentProviderTime = currentProviderValue instanceof Date ? currentProviderValue.getTime()
+          : typeof currentProviderValue === 'string' ? Date.parse(`${currentProviderValue.replace(' ', 'T')}Z`) : NaN;
+        const conflictingProviderTime = providerStatus === 'published' && webhookPublishedAt
+          && Number.isFinite(currentProviderTime) && currentProviderTime !== webhookPublishedAt.getTime();
         const delayedNonterminal=slotIsTerminal&&(!['published','failed','partial','canceled'].includes(providerStatus) || (slot.provider_status && providerStatus!==slot.provider_status));
         staleTerminalCancellation=slotIsTerminal&&providerStatus==='canceled';
-        if(conflictingPublication) {
+        if(conflictingPublication || conflictingProviderTime) {
           await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=?",[slot.id]);
-          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:'unknown_outcome'})]);
+          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:conflictingProviderTime?'provider_timestamp_conflict':'unknown_outcome'})]);
         } else if(!delayedNonterminal&&!staleTerminalCancellation) {
           const activeSession=Boolean(settingsRow?.automation_enabled)&&slot?.automation_session_id===configured.automationSessionId;
           activeSessionCanceledPost=providerStatus==='canceled'&&activeSession;
           const slotStatus=activeSessionCanceledPost?'failed':providerStatus;
           const final=['published','failed','partial','canceled'].includes(slotStatus);
           const completedAt=providerStatus==='published'?webhookPublishedAt:null;
-          await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,postId]);
+          await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at),provider_published_at=IF(? IS NOT NULL,COALESCE(provider_published_at,?),provider_published_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,providerStatus==='published'?webhookPublishedAt:null,providerStatus==='published'?webhookPublishedAt:null,postId]);
           if(slot && final) await suppressPendingNotices(c,slot.id,slotStatus);
         }
       }
@@ -1023,8 +1311,8 @@ function createRepository(pool) {
   async function claimDailySummary({localDate,timezone}) { return reserveDailySummary(localDate,timezone); }
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
-  async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {}),...(status==='published'&&(details.providerPublishedAt||details.publishedAt)?{providerPublishedAt:details.providerPublishedAt||details.publishedAt}:{})});return true; }
+  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

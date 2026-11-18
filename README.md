@@ -26,7 +26,7 @@ Generator memakai pengetahuan bisnis NDI yang disimpan di MySQL dan harus disetu
 
 Setiap konten baru wajib menyertakan CTA kontekstual dan satu URL HTTPS yang sama persis dengan **Website Resmi / CTA URL**. Nilai awalnya `https://nusadataindonesia.com`; admin boleh menetapkan URL HTTPS lain yang valid. Aplikasi tidak mengunjungi URL CTA. URL dashboard dan situs pemasaran adalah konfigurasi yang berbeda.
 
-Migrasi `021_ndi_business_knowledge.sql` menambah penyimpanan knowledge NDI, mengarsipkan salinan pengaturan lama, dan meminta admin meninjau onboarding kembali. Migrasi mempertahankan baris serta state facts lama, slot, sesi, audit, integrasi, dan status otomasi. Runtime NDI tidak membaca facts lama; slot tanpa snapshot CTA NDI tidak dapat dipublikasikan ulang. Aktivasi dan dispatch tetap tertahan sampai mesin kategori/gaya Fase B tersedia, dengan alasannya terlihat di dashboard.
+Migrasi `021` mengarsipkan konfigurasi legacy dan menyiapkan knowledge NDI; migrasi `022` menambah strategi konten. Keduanya additive dan tidak menghapus facts/slot/session/audit/integrasi maupun mengubah status automation. Runtime NDI tidak membaca facts lama. Strategi, automation dan scheduler memerlukan tindakan admin/operator terpisah. Sinkronisasi Website NDI belum tersedia pada branch ini dan direncanakan untuk Fase C. Kesiapan deployment dan rollback database tetap perlu review operator.
 
 Perintah meminta email dan password; input password disembunyikan. Tidak ada akun atau kredensial administrator bawaan.
 
@@ -54,7 +54,7 @@ npm test
 
 Tes integrasi MySQL memakai server disposable dengan `ALLOW_DESTRUCTIVE_DB_TESTS=true` dan alamat loopback. Jangan jalankan tes destruktif terhadap database produksi atau volume Compose persisten. Tes provider menggunakan mock; setup dan tes tidak boleh mengirim notifikasi Telegram atau mempublikasikan post Threads.
 
-CI menyiapkan schema disposable khusus untuk menguji upgrade database legacy melalui migrasi `021`, termasuk retensi data dan pencegahan kontaminasi prompt.
+CI menyiapkan schema disposable khusus untuk menguji upgrade legacy sampai migrasi `022`, termasuk retensi data, strategi konten, dan pencegahan kontaminasi prompt.
 
 Perintah aplikasi lain:
 
@@ -63,4 +63,4 @@ Perintah aplikasi lain:
 - `npm run admin:create` membuat administrator pertama secara interaktif.
 - `npm run dispatch` memproses satu slot yang sudah jatuh tempo; gunakan hanya setelah meninjau konfigurasi dan target.
 
-Scheduler, Threads publishing, Telegram, dan integrasi AI tetap nonaktif sampai kredensial baru dan akun NDI diverifikasi serta aktivasi dilakukan secara terpisah.
+Scheduler, Threads publishing, Telegram, dan integrasi AI memiliki kontrol aktivasi terpisah. Strategi konten dan knowledge harus direview admin terlebih dahulu; proposal AI/website tidak disetujui otomatis. Jangan aktifkan fitur produksi sebelum akun, migration/rollback, dan operasi ditinjau.

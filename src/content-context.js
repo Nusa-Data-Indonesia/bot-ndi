@@ -1,7 +1,10 @@
 'use strict';
 
+/** @returns {Record<string, any>} */
 function buildContentContext(context, settings) {
   const knowledge = settings.businessKnowledge;
+  const category = context.slot?.contentStrategy?.category || null;
+  const style = context.slot?.contentStrategy?.style || null;
   const history = (context.history || []).filter((post) => post.status === 'published' && post.pillar === 'ndi');
   const recentCaptions = history
     .filter((post) => typeof post.caption === 'string' && post.caption.trim())
@@ -16,6 +19,8 @@ function buildContentContext(context, settings) {
   ];
   return {
     pillar: 'ndi',
+    ...(category ? { category } : {}),
+    ...(style ? { style } : {}),
     companyName: knowledge.companyName,
     positioning: knowledge.positioning,
     description: knowledge.description,

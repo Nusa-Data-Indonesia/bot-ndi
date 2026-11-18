@@ -12,12 +12,14 @@ const { registerAutomationRoutes } = require('./http/routes/automation');
 const { registerWebhookRoutes } = require('./http/routes/webhooks');
 const { registerIntegrationRoutes } = require('./http/routes/integrations');
 const { registerPublicationResolutionRoutes } = require('./http/routes/publication-resolution');
+const { registerContentStrategyRoutes } = require('./http/routes/content-strategy');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
   'EXTERNAL_INTEGRATIONS_DISABLED',
   'PUBLICATION_VERIFICATION_UNAVAILABLE', 'PUBLICATION_RECONCILIATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
   'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
+
 ]);
 
 /**
@@ -94,6 +96,7 @@ function createServer({ config, repository, auth, services = {} } = {}) {
   registerSessionAdminRoutes(app, { repository, auth, middleware });
   registerPublicationResolutionRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerIntegrationRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerContentStrategyRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerDashboardRoutes(app, {
     repository,
     services,

@@ -14,10 +14,14 @@ const NDI_SETTINGS = {
   hashtags: ['#NusaDataIndonesia', '#TeknologiData'],
   businessKnowledge: { ...DEFAULT_NDI_KNOWLEDGE, ctaUrl: CTA_URL },
 };
+const CONTENT_STRATEGY = {
+  category: { id: 'category-1', slug: 'edukasi-data-teknologi', name: 'Edukasi Data & Teknologi', guidance: 'Jelaskan satu konsep teknologi dengan bahasa yang mudah dipahami.' },
+  style: { id: 'style-1', slug: 'korporat-profesional', name: 'Korporat profesional', instructions: 'Gunakan bahasa profesional, jelas, dan ringkas.' },
+};
 
 function harness(overrides = {}) {
   const calls = [];
-  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL };
+  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY };
   const repository = {
     getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1', settings: NDI_SETTINGS, facts: [], history: [] }),
     ensureNextDueSlot: async () => ({ slot, created: true, skippedCount: 0 }),
@@ -90,6 +94,26 @@ test('keeps publication closed until the Phase B category and style engine is re
   assert.equal(result.claimed, 0);
   assert.equal(planningCalls, 0);
   assert.equal(rig.calls.some(([kind]) => kind === 'prepared'), false);
+});
+
+test('cancels a claimed legacy slot without strategy snapshot before generation or publication', async () => {
+  const { calls, slot, repository, publisher } = harness();
+  delete slot.contentStrategy;
+  let generationCalls = 0;
+  publisher.publishNow = async () => assert.fail('a slot without a strategy snapshot must not publish');
+
+  const result = await runDispatcher({
+    repository,
+    publisher,
+    content: async () => { generationCalls++; return content(); },
+    clock: fixedClock,
+  });
+
+  assert.equal(result.claimed, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(generationCalls, 0);
+  assert.ok(calls.some(([kind, id, patch]) => kind === 'update' && id === slot.id
+    && patch.status === 'canceled' && patch.errorCode === 'content_strategy_snapshot_missing'));
 });
 
 test('dynamic dispatcher binds publication and both AI calls to the slot snapshot', async () => {
@@ -489,7 +513,7 @@ test('prepared NDI slot reuses persisted payload and idempotency key without gen
   const durableCaption = `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`;
   const durablePayload = { content: durableCaption, targets: [{ account_id: 'acct-1' }] };
   const safetyHash = contentSafetyHash((await repository.getRuntimeState()).settings);
-  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'ndi', factBearing: false, factIds: [], factVersions: [], contentSafetyHash: safetyHash });
+  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY, requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'ndi', factBearing: false, factIds: [], factVersions: [], contentSafetyHash: safetyHash });
   const generatedContent = async () => assert.fail('prepared content must not be regenerated');
   publisher.publishNow = async (payload, key) => {
     assert.equal(payload, durablePayload);
@@ -506,7 +530,7 @@ test('prepared NDI slot remains publishable after an interval configuration upda
   const savedSettings = (await repository.getRuntimeState()).settings;
   const payload = { content: `${NDI_CAPTION}\n#NusaDataIndonesia #TeknologiData\n${CTA_URL}`, targets: [{ account_id: 'acct-1' }] };
   repository.claimDueSlot = async () => ({
-    id: 'ndi-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, requestPayload: payload,
+    id: 'ndi-ready', automationSessionId: 'session-1', status: 'ready', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY, requestPayload: payload,
     idempotencyKey: 'ndi-key', caption: payload.content, pillar: 'ndi', factBearing: false,
     factIds: [], factVersions: [], contentSafetyHash: contentSafetyHash(savedSettings),
   });
@@ -528,7 +552,7 @@ test('prepared NDI slot remains publishable after an interval configuration upda
 
 test('legacy ready caption without safety snapshot is failed without publishing', async () => {
   const { calls, repository, publisher } = harness();
-  repository.claimDueSlot = async () => ({ id: 'old', automationSessionId: 'session-1', status: 'ready', ctaUrl: null, requestPayload: { content: 'Lama', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'old-key', factBearing: true, factIds: ['legacy-topup'] });
+  repository.claimDueSlot = async () => ({ id: 'old', automationSessionId: 'session-1', status: 'ready', ctaUrl: null, contentStrategy: CONTENT_STRATEGY, requestPayload: { content: 'Lama', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'old-key', factBearing: true, factIds: ['legacy-topup'] });
   publisher.publishNow = async () => assert.fail('legacy facts must not be published');
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.failed, 1);
@@ -569,7 +593,7 @@ test('paused automation does not plan or claim a new slot', async () => {
 
 test('a claimed slot at night publishes despite legacy active hours', async () => {
   const { repository, publisher } = harness();
-  repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z', ctaUrl: CTA_URL });
+  repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY });
   repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1', settings: { ...NDI_SETTINGS, schedule: { ...NDI_SETTINGS.schedule, intervalMinutes: 60, activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
   let publishes = 0;
   publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };

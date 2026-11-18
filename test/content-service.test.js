@@ -27,6 +27,10 @@ const base = {
   ],
 };
 const caption = 'Informasi yang tertata membantu tim memahami pola yang relevan. Mari diskusikan kebutuhan data dan solusi teknologi untuk organisasi Anda.';
+const contentStrategy = {
+  category: { id: 'category-1', slug: 'edukasi-data-teknologi', name: 'Edukasi Data & Teknologi', guidance: 'Jelaskan satu konsep data dengan bahasa yang mudah dipahami.' },
+  style: { id: 'style-1', slug: 'korporat-profesional', name: 'Korporat profesional', instructions: 'Gunakan bahasa profesional dan ringkas.' },
+};
 
 function mockGeneration(text = caption, audit = { valid: true, factIds: [] }) {
   const requests = [];
@@ -82,6 +86,19 @@ test('does not retrieve learning rules or snapshot legacy fact context for NDI g
   assert.equal(result.status, 'ready');
   assert.equal(retrievalCalls, 0);
   assert.equal(snapshotCalls, 0);
+});
+
+test('includes the slot category and writing style in generation and semantic audit context', async () => {
+  const mock = mockGeneration();
+  const result = await generatePost({ ...base, slot: { id: 'strategy-slot', contentStrategy } }, mock);
+
+  assert.equal(result.status, 'ready');
+  const generationContext = JSON.parse(mock.requests[0].user);
+  const auditContext = JSON.parse(mock.requests[1].user);
+  assert.deepEqual(generationContext.category, contentStrategy.category);
+  assert.deepEqual(generationContext.style, contentStrategy.style);
+  assert.deepEqual(auditContext.category, contentStrategy.category);
+  assert.deepEqual(auditContext.style, contentStrategy.style);
 });
 
 test('accepts an arbitrary safe HTTPS CTA without a host allowlist', async () => {

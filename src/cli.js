@@ -264,6 +264,32 @@ async function main(argv = process.argv.slice(2)) {
       };
       services.flushNotifications = () => notifier.flush();
     }
+    const proposalJobAvailable = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
+    services.categoryProposalJobAvailable = proposalJobAvailable;
+    let categoryProposalScheduler = null;
+    const proposalRunner = require('./category-proposals').createCategoryProposalRunner({
+      repository,
+      logger,
+      notifier,
+      generate: async (request, model) => {
+        assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
+        const generate = await generatorForModel(model);
+        return generate(request);
+      },
+    });
+    services.setCategoryProposalJobEnabled = async (enabled) => {
+      if (enabled && !proposalJobAvailable) throw Object.assign(new Error('EXTERNAL_INTEGRATIONS_DISABLED'), { code: 'EXTERNAL_INTEGRATIONS_DISABLED', status: 503 });
+      if (!enabled) {
+        if (categoryProposalScheduler) await categoryProposalScheduler.stop();
+        return { enabled: false };
+      }
+      if (!categoryProposalScheduler) categoryProposalScheduler = createScheduler({ intervalMs: 60_000, logger, run: proposalRunner });
+      categoryProposalScheduler.start({ runImmediately: false });
+      return { enabled: true };
+    };
+    if (proposalJobAvailable && (await repository.getContentStrategyState()).proposalSettings?.enabled === true) {
+      await services.setCategoryProposalJobEnabled(true);
+    }
     services.pauseAutomation = async ({ adminId }) => {
       if (!isExternalIntegrationsEnabled(config)) {
         await repository.setAutomationEnabled(false, adminId);
@@ -325,11 +351,13 @@ async function main(argv = process.argv.slice(2)) {
       const hardStop = setTimeout(() => process.exit(1), 200000).unref();
       captureFailure?.stop?.(); recordOutcome?.stop?.();
       retentionScheduler?.halt?.();
+      void categoryProposalScheduler?.stop?.();
       void scheduler?.stop();
       const learningPoolsClosed = closeLearningOptionalPools();
       server.close(async () => {
         try {
           await scheduler?.stop();
+          await categoryProposalScheduler?.stop?.();
           await pool.end();
           if (capturePool) await endOptionalPoolBounded(capturePool);
           if (outcomePool) await endOptionalPoolBounded(outcomePool);

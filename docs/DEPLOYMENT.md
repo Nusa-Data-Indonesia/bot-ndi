@@ -338,16 +338,15 @@ gzip -t "$BACKUP"
 sha256sum "$BACKUP"
 ```
 
-Catat SHA release aktif dan salin backup terenkripsi ke media off-host. Uji restore pada volume disposable dengan nama terpisah dari produksi:
+Catat SHA release aktif dan salin backup terenkripsi ke media off-host. Uji restore dalam container disposable dengan `/var/lib/mysql` di tmpfs; jangan membuat atau menghapus Docker volume untuk pengujian:
 
 ```sh
-docker volume create bot-ndi_restore_test
 docker run --pull=never -d --name bot-ndi-restore-test \
   -e MYSQL_ROOT_PASSWORD=restore-only-password \
   -e MYSQL_DATABASE=bot_ndi \
   -e MYSQL_USER=bot_ndi_app \
   -e MYSQL_PASSWORD=restore-only-password \
-  -v bot-ndi_restore_test:/var/lib/mysql mysql:8.4
+  --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=2g mysql:8.4
 
 for attempt in $(seq 1 30); do
   docker exec -e MYSQL_PWD=restore-only-password bot-ndi-restore-test \
@@ -362,11 +361,10 @@ docker exec -e MYSQL_PWD=restore-only-password bot-ndi-restore-test \
   mysql --user=root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='bot_ndi'"
 ```
 
-Hasil akhir harus menampilkan jumlah tabel lebih dari nol. Jika import atau pemeriksaan gagal, pertahankan container dan volume test untuk investigasi. Setelah hasil valid dan hanya setelah memastikan nama disposable persis seperti di atas, hapus sumber tes secara manual:
+Hasil akhir harus menampilkan jumlah tabel lebih dari nol. Jika import atau pemeriksaan gagal, pertahankan container test untuk investigasi. Setelah hasil valid, hentikan container; filesystem database test berada di tmpfs dan akan ikut hilang bersama container:
 
 ```sh
 docker rm -f bot-ndi-restore-test
-docker volume rm bot-ndi_restore_test
 ```
 
 Untuk pemulihan produksi, lakukan hanya dengan persetujuan operator dan setelah restore disposable berhasil: hentikan app agar tidak menulis, simpan backup keselamatan terbaru, verifikasi checksum serta SHA/migration history backup yang dipilih, lalu restore dump ke database tujuan melalui MySQL. Dump berisi `DROP DATABASE`/`CREATE DATABASE`; restore tersebut mengganti isi schema `bot_ndi`, meskipun volume Docker tidak dihapus. Setelah import sukses, jalankan migrasi dari release yang kompatibel, mulai app kembali, dan pastikan `/health/ready` sehat. Pertahankan volume serta image lama sampai pemeriksaan selesai. Jangan melakukan restore in-place bila backup, commit, atau migration history belum dipastikan.

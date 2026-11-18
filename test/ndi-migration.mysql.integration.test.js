@@ -15,7 +15,7 @@ function json(value) {
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
 
-test('021 upgrades representative legacy NDI state without deleting data or changing uncertain publication state', { skip: !enabled }, async () => {
+test('021–022 upgrade legacy state additively, seed strategy once, and keep posting gated until explicit admin review', { skip: !enabled }, async () => {
   const { loadEnv } = require('../src/config');
   const { createPool } = require('../src/db');
   const { runMigrations } = require('../src/migrate');
@@ -75,8 +75,33 @@ test('021 upgrades representative legacy NDI state without deleting data or chan
     assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), ['021_ndi_business_knowledge.sql']);
     assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), [], 'migration runner must record 021 once');
 
+    await fs.copyFile(path.join(sourceDir, '022_content_strategy.sql'), path.join(migrationDir, '022_content_strategy.sql'));
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), ['022_content_strategy.sql']);
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), [], 'migration runner must record 022 once');
+
     const migrationSql = await fs.readFile(path.join(sourceDir, '021_ndi_business_knowledge.sql'), 'utf8');
     for (const statement of migrationSql.split(';').map((part) => part.trim()).filter(Boolean)) await pool.query(statement);
+
+    const [[defaultCategory]] = await pool.execute("SELECT id,guidance,active FROM content_categories WHERE slug='edukasi-data-teknologi'");
+    assert.ok(defaultCategory);
+    await pool.execute('UPDATE content_categories SET guidance=?,active=TRUE WHERE id=?', ['Admin edit must survive migration replay.', defaultCategory.id]);
+    const migration022Sql = await fs.readFile(path.join(sourceDir, '022_content_strategy.sql'), 'utf8');
+    const migrationConnection = await pool.getConnection();
+    try {
+      for (const statement of migration022Sql.split(';').map((part) => part.trim()).filter(Boolean)) await migrationConnection.query(statement);
+    } finally { migrationConnection.release(); }
+    const [[retainedCategory]] = await pool.execute('SELECT guidance,active FROM content_categories WHERE id=?', [defaultCategory.id]);
+    assert.equal(retainedCategory.guidance, 'Admin edit must survive migration replay.');
+    assert.equal(Boolean(retainedCategory.active), true);
+    const [[categoryCount]] = await pool.execute('SELECT COUNT(*) AS count FROM content_categories');
+    const [[styleCount]] = await pool.execute('SELECT COUNT(*) AS count FROM content_styles');
+    const [[strategySetting]] = await pool.execute('SELECT enabled FROM content_strategy_settings WHERE id=1');
+    const [[proposalSetting]] = await pool.execute('SELECT enabled,interval_days FROM category_proposal_settings WHERE id=1');
+    assert.equal(Number(categoryCount.count), 8, 'the migration seeds the exact eight SSOT categories');
+    assert.equal(Number(styleCount.count), 7, 'the migration seeds the exact seven SSOT styles');
+    assert.equal(Boolean(strategySetting.enabled), false, 'strategy approval stays off after migration');
+    assert.equal(Boolean(proposalSetting.enabled), false, 'AI proposal scheduler is disabled by default');
+    assert.equal(Number(proposalSetting.interval_days), 30);
 
     const [[settingsRow]] = await pool.execute('SELECT settings_json,knowledge_json,business_knowledge_json,business_knowledge_approved,legacy_business_settings_json,legacy_business_knowledge_json,automation_enabled FROM settings WHERE id=1');
     const currentSettings = json(settingsRow.settings_json);
@@ -130,13 +155,57 @@ test('021 upgrades representative legacy NDI state without deleting data or chan
     const state = await repository.getRuntimeState();
     assert.equal(state.businessKnowledge.companyName, 'Nusa Data Indonesia');
     assert.equal(state.businessKnowledgeApproved, false);
-    assert.equal(state.contentStrategyReady, false, 'publishing must remain closed until the Phase B engine exists');
-    assert.match(state.contentStrategyReason, /Fase B/u);
+    assert.equal(state.contentStrategyReady, false, 'posting must stay closed until an admin explicitly reviews strategy');
+    assert.equal(state.contentStrategyReasonCode, 'CONTENT_STRATEGY_REVIEW_REQUIRED');
     assert.equal(state.automationEnabled, true);
     assert.deepEqual(state.facts, [], 'active runtime must not expose product facts as NDI knowledge');
     const promptContext = buildContentContext(state, state.settings);
     assert.doesNotMatch(JSON.stringify(promptContext), /RAHASIA-|Kedai\s*Merzz|Mobile Legends|top-up/iu);
     assert.equal(promptContext.pillar, 'ndi');
+
+    await assert.rejects(repository.setContentStrategyEnabled(true, adminId), (error) => error.code === 'AUTOMATION_MUST_BE_PAUSED');
+    await pool.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1');
+    await repository.saveKnowledge(state.businessKnowledge, adminId);
+    assert.deepEqual(await repository.setContentStrategyEnabled(true, adminId), { enabled: true });
+    const reviewedState = await repository.getRuntimeState();
+    assert.equal(reviewedState.contentStrategyReady, true);
+    assert.equal(reviewedState.automationEnabled, false, 'reviewing strategy never enables posting');
+
+    const customCategory = await repository.saveContentStrategyRecord('category', null, {
+      name: 'Kategori Integration', guidance: 'Panduan kategori untuk verifikasi CRUD.', active: true,
+    }, adminId);
+    assert.ok(customCategory.id);
+    await repository.setContentStrategyRecordActive('category', customCategory.id, false, adminId);
+    await repository.archiveContentStrategyRecord('category', customCategory.id, adminId);
+    const archived = (await repository.getContentStrategyState()).categories.find((item) => item.id === customCategory.id);
+    assert.equal(archived.active, false);
+    assert.ok(archived.archivedAt);
+
+    const knowledgeBeforeProposal = (await repository.getSettings()).businessKnowledge;
+    await repository.saveCategoryProposalSettings({ enabled: true, intervalDays: 30 }, adminId);
+    await pool.execute('UPDATE category_proposal_settings SET next_run_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 MINUTE) WHERE id=1');
+    const proposalRun = await repository.claimCategoryProposalRun({ now: new Date() });
+    assert.equal(proposalRun.model, 'test-model-only');
+    assert.equal(await repository.finishCategoryProposalRun({ token: proposalRun.token, proposals: [{
+      name: 'Tinjauan Informasi', guidance: 'Usulan tema untuk percakapan umum tentang informasi yang tertata.',
+    }] }), true);
+    const proposal = (await repository.getContentStrategyState()).proposals.find((item) => item.name === 'Tinjauan Informasi');
+    assert.equal(proposal.status, 'pending');
+    assert.deepEqual((await repository.getSettings()).businessKnowledge, knowledgeBeforeProposal, 'AI proposals must not mutate official business knowledge');
+    await repository.reviewCategoryProposal(proposal.id, 'approve', adminId);
+    assert.ok((await repository.getContentStrategyState()).categories.some((item) => item.name === 'Tinjauan Informasi' && item.active));
+
+    const [[categoryA]] = await pool.execute("SELECT id FROM content_categories WHERE slug='edukasi-data-teknologi'");
+    const [[categoryB]] = await pool.execute("SELECT id FROM content_categories WHERE slug='engagement'");
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:01:00.000Z'), categoryA.id, new Date('2026-11-18T08:00:00.000Z')]);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:02:00.000Z'), categoryB.id, new Date('2026-11-18T10:00:00.000Z')]);
+    const orderedState = await repository.getRuntimeState();
+    assert.equal(orderedState.contentStrategy.latestCategoryId, String(categoryB.id), 'provider publication time wins over slot insertion order');
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'unknown',?,NULL)", [randomUUID(), new Date('2026-11-18T00:03:00.000Z'), categoryA.id]);
+    assert.equal((await repository.getRuntimeState()).contentStrategy.orderUncertain, false, 'unknown outcomes do not count as successful publications');
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:04:00.000Z'), categoryA.id, new Date('2026-11-18T10:00:00.000Z')]);
+    assert.equal((await repository.getRuntimeState()).contentStrategy.orderUncertain, true, 'timestamp ties across categories block further rotation');
+
   } finally {
     await pool.end();
     await fs.rm(migrationDir, { recursive: true, force: true });

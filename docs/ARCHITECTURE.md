@@ -13,8 +13,9 @@ The dispatcher calls the same application services. OpenRouter generates content
 - Domain policy validates schedule settings, a one-minute minimum cadence, and hashtags. Legacy game, price, product-fact, and active-window policy is not part of the active NDI path.
 - The repository loads NDI business knowledge from a dedicated MySQL column. New generation requires an explicitly approved knowledge record. The context contains NDI identity, services, ticketing status, approved/forbidden claims, CTA, configured hashtags, and up to five recent published NDI captions. Legacy product facts, old templates, and non-NDI captions are excluded.
 - The content service always generates for the `ndi` pillar in Indonesian. Deterministic checks require one configured HTTPS URL at the end, configured hashtags, an NDI-contextual invitation, factual-number and personal-information safeguards, legacy-content rejection, a 500-character limit, and repetition checks. An independent model audit must pass; malformed, rejected, or unavailable audits fail closed. Generation retries remain bounded at two attempts.
-- The CTA defaults to `https://nusadataindonesia.com` and can be any syntactically valid HTTPS URL configured by an admin. The application does not fetch the CTA. The marketing destination is independent from the dashboard origin and the future website-sync origin.
+- The CTA defaults to `https://nusadataindonesia.com` and can be any syntactically valid HTTPS URL configured by an admin. The application does not fetch the CTA. The marketing destination is independent from the dashboard origin. CTA validation does not fetch the configured URL.
 - Semantic review is probabilistic and cannot guarantee factual accuracy. Admins should review knowledge and representative output before enabling automation. NDI Ticketing must remain described as an in-development invitation-only customer-support triage pilot, not an event-ticketing product available for general purchase.
+- Category and style selection is persisted with each logical slot in the same transaction as claim. Only an authoritative Tebar Threads target `published` timestamp advances category rotation. Missing or tied provider times block new publication rather than using observation time. The category-proposal job is optional, defaults OFF, and uses a scheduler independent of publishing; AI suggestions remain pending until admin review.
 - Tebar adapter owns API URLs, Bearer authentication, account/status/list/cancel/insights requests, idempotency headers, and response normalization. Other modules use provider-neutral methods.
 - Telegram adapter sends bounded notifications and daily summaries. It redacts secrets and never exposes provider response bodies.
 - Repository owns SQL, migrations, transactions, durable slot state, sessions, NDI knowledge, settings, audit events, and webhook deduplication. Legacy `service_facts` and `templates` rows remain stored for history but have no active route or generation path.
@@ -33,9 +34,9 @@ The daily Telegram summary is scheduled for 22:00 `Asia/Jakarta` regardless of a
 
 ## NDI business content and migration
 
-Migration `021_ndi_business_knowledge.sql` is additive and restartable. It adds a structured NDI knowledge column, an admin-approval flag, separate legacy-settings archives, and a per-slot CTA snapshot. It copies old `settings_json` and `knowledge_json` into archive columns before removing game, price, old-brand, and tracked-link keys from the active settings object. It replaces old active knowledge with the NDI default, clears old active hashtags, and leaves `service_facts` rows and their active states unchanged. The NDI runtime does not read those rows. It does not update `automation_enabled`, provider credentials, integration configuration, sessions, audit rows, or slot status.
+Migrations `021`–`022` are additive and restartable. Migration 021 adds structured NDI knowledge, approval, legacy-settings archives, and a per-slot CTA snapshot. It archives the old `settings_json` and `knowledge_json` before removing game, price, old-brand, and tracked-link keys from active settings, initializes NDI knowledge without approval, clears old active hashtags, and leaves `service_facts` rows/state unchanged. The NDI runtime does not read those rows. Migration 022 adds strategy categories/styles, proposals, strategy settings, per-slot snapshots and provider publication time. The migrations do not update `automation_enabled`, provider credentials, integration configuration, sessions, audit rows, or existing slot status. Strategy approval and proposal scheduling remain off after migration.
 
-Onboarding is marked incomplete so an existing database cannot publish under old review state. Existing ready/pending slots have no CTA snapshot and fail closed; `publishing` and `unknown` slots retain their provider identity and state for existing reconciliation. After migration, a dashboard admin must review and save NDI knowledge before automation can pass its readiness checks. Image rollback does not undo MySQL DDL or restore archived old settings; assess compatibility and retain a verified backup before any production rollout.
+Onboarding is marked incomplete so an existing database cannot publish under old review state. Existing ready/pending slots without required CTA or strategy snapshots fail closed; `publishing` and `unknown` slots retain their provider identity and state for reconciliation. A dashboard admin must review NDI knowledge and explicitly enable the content strategy before automation can pass readiness. Image rollback does not undo MySQL DDL or restore archived business/strategy knowledge; assess compatibility and retain a verified backup before any production rollout.
 
 ## Publish and recovery states
 
@@ -81,7 +82,11 @@ Tebar documents immediate publishing and scheduled publishing, idempotency keys,
 | `src/http/routes/session-admin.js` | POST | `/api/admins` |
 | `src/http/routes/session-admin.js` | PATCH | `/api/admins/:id` |
 | `src/http/routes/dashboard.js` | GET | `/api/dashboard` |
-| `src/http/routes/dashboard.js` | PUT | `/api/settings` |
+| `src/http/routes/content-strategy.js` | GET | `/api/content-strategy` |
+| `src/http/routes/content-strategy.js` | POST/PUT/PATCH | `/api/content-strategy/categories`, `/styles`, `/:id`, `/:id/active`, `/:id/archive` |
+| `src/http/routes/content-strategy.js` | POST | `/api/content-strategy/enable`, `/api/content-strategy/disable` |
+| `src/http/routes/content-strategy.js` | PUT / POST | `/api/content-strategy/proposals/config`, `/proposals/:id/:decision` |
+||| `src/http/routes/dashboard.js` | PUT | `/api/settings` |
 | `src/http/routes/dashboard.js` | PUT | `/api/knowledge` |
 | `src/http/routes/dashboard.js` | PUT | `/api/facts/:service` |
 | `src/http/routes/integrations.js` | GET | `/api/integrations` |
@@ -97,6 +102,6 @@ Tebar documents immediate publishing and scheduled publishing, idempotency keys,
 
 `test/routes.contract.test.js` compares dashboard API calls with registered Express method/path pairs and verifies the route set and ordering.
 
-`PUT /api/knowledge` and `PUT /api/settings` require authenticated sessions, same-origin validation, CSRF protection, and audit logging. `PUT /api/facts/:service` is retained as a compatibility response that returns `410 LEGACY_FACTS_ARCHIVED`; template and legacy Learning endpoints are not registered. The dashboard has no active game, top-up, template, or Learning controls.
+`PUT /api/knowledge` and `PUT /api/settings` require authenticated sessions, same-origin validation, CSRF protection, and audit logging. `PUT /api/facts/:service` is retained as a compatibility response that returns `410 LEGACY_FACTS_ARCHIVED`; template and legacy Learning endpoints are not registered. The dashboard has no active game, top-up, template, or Learning controls. Category/style controls use existing dashboard navigation and do not redesign the main layout. Website-knowledge sync is deferred to Phase C. Website knowledge sync is deferred to Phase C.
 
 Webhook body parsing and fallback ordering are intentional: `/webhooks/tebar` uses raw-body parsing before `express.json()` so signature verification sees the signed bytes. The `/api` not-found handler stays after API routes and before static assets and the SPA fallback.

@@ -6,11 +6,12 @@ const { validateBusinessKnowledge } = require('../../business-knowledge');
 function registerDashboardRoutes(app, { repository, services, authenticated, mutation }) {
   app.get('/api/dashboard', authenticated, async (_req, res, next) => {
     try {
-      const [state, posts, activity, audit] = await Promise.all([
+      const [state, posts, activity, audit, contentStrategy] = await Promise.all([
         repository.getRuntimeState(),
         repository.listSlots(100),
         repository.listActivity(100),
         repository.listAudit(100),
+        repository.getContentStrategyState ? repository.getContentStrategyState() : null,
       ]);
       const [provider, clicks] = await Promise.all([
         services.getProviderStatus
@@ -23,7 +24,7 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
       const checked = validateNdiSettings(state.settings || {});
       const knowledgeReady = checked.valid && state.businessKnowledgeApproved === true;
       const items = [
-        { key: 'contentStrategy', label: 'Mesin kategori dan gaya konten Fase B', required: true, complete: state.contentStrategyReady === true },
+        { key: 'contentStrategy', label: 'Strategi konten NDI disetujui', required: true, complete: state.contentStrategyReady === true },
         { key: 'knowledge', label: 'Pengetahuan bisnis NDI dan Website Resmi / CTA URL', required: true, complete: knowledgeReady },
         { key: 'thread', label: 'Akun uji Threads aktif di Tebar', required: true, complete: provider.connected === true },
         { key: 'ai', label: 'Penyedia AI dikonfigurasi', required: true, complete: services.aiConfigured === true },
@@ -42,6 +43,7 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
         settings: state.settings || {},
         businessKnowledge: state.businessKnowledge || null,
         businessKnowledgeApproved: state.businessKnowledgeApproved === true,
+        contentStrategy,
         posts,
         activity: recentActivity,
         provider,
@@ -50,6 +52,7 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
           onboardingComplete: state.onboardingComplete === true,
           contentStrategyReady: state.contentStrategyReady === true,
           contentStrategyReason: state.contentStrategyReason || null,
+          contentStrategyReasonCode: state.contentStrategyReasonCode || null,
         },
         onboarding: items,
         metrics,

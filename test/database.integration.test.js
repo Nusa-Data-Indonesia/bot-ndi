@@ -14,6 +14,30 @@ async function restoreBusinessSettings(pool,row) {
     encodeJson(row.settings_json),encodeJson(row.knowledge_json),encodeJson(row.business_knowledge_json),row.business_knowledge_approved,row.automation_enabled,
   ]);
 }
+async function snapshotContentStrategy(pool) {
+  const [[row]] = await pool.execute('SELECT enabled,enabled_by,enabled_at FROM content_strategy_settings WHERE id=1');
+  return row;
+}
+async function restoreContentStrategy(pool,row) {
+  if (!row) return;
+  await pool.execute('UPDATE content_strategy_settings SET enabled=?,enabled_by=?,enabled_at=? WHERE id=1', [row.enabled, row.enabled_by, row.enabled_at]);
+}
+async function enableTestContentStrategy(pool) {
+  await pool.execute('UPDATE content_strategy_settings SET enabled=TRUE,enabled_by=NULL,enabled_at=UTC_TIMESTAMP(3) WHERE id=1');
+}
+async function testStrategySnapshot(pool) {
+  const [[category]] = await pool.execute('SELECT id,slug,name,guidance FROM content_categories WHERE active=TRUE AND archived_at IS NULL ORDER BY id LIMIT 1');
+  const [[style]] = await pool.execute('SELECT id,slug,name,instructions FROM content_styles WHERE active=TRUE AND archived_at IS NULL ORDER BY id LIMIT 1');
+  assert.ok(category && style, 'migration defaults must seed at least one active category and style');
+  return {
+    categoryId: category.id,
+    styleId: style.id,
+    json: JSON.stringify({
+      category: { id: String(category.id), slug: category.slug, name: category.name, guidance: category.guidance },
+      style: { id: String(style.id), slug: style.slug, name: style.name, instructions: style.instructions },
+    }),
+  };
+}
 
 async function deleteSlot(pool,id) {
   await pool.execute('DELETE FROM generation_attempts WHERE slot_id=?',[id]);
@@ -83,10 +107,11 @@ test('MySQL login throttles are shared and bound concurrent attempts across auth
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
   const {randomBytes}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
-  const config=loadEnv();let pool=createPool(config);const priorAdminStates=[];const createdAdminIds=[];let settingsBeforeTest;
+  const config=loadEnv();let pool=createPool(config);const priorAdminStates=[];const createdAdminIds=[];let settingsBeforeTest;let strategyBeforeTest;
   try {
     await runMigrations(pool);
     settingsBeforeTest=await snapshotBusinessSettings(pool);
+    strategyBeforeTest=await snapshotContentStrategy(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=FALSE,automation_enabled=FALSE WHERE id=1',[
       JSON.stringify({schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[]}),JSON.stringify({}),JSON.stringify(DEFAULT_NDI_KNOWLEDGE),
     ]);
@@ -326,6 +351,7 @@ test('MySQL migrations and repository are reachable in integration environment',
         hashtags:[],
         targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,automationSessionId:randomUUID(),
       };
+      await enableTestContentStrategy(pool);
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[
         JSON.stringify(testSettings),JSON.stringify({}),JSON.stringify(ndiKnowledge()),
       ]);
@@ -432,6 +458,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       for(const admin of priorAdminStates)await pool.execute('UPDATE admins SET active=? WHERE id=?',[admin.active?1:0,admin.id]);
       await pool.execute('DELETE FROM notification_outbox');
       if(settingsBeforeTest)await restoreBusinessSettings(pool,settingsBeforeTest);
+      if(strategyBeforeTest)await restoreContentStrategy(pool,strategyBeforeTest);
     }
     finally { await pool.end(); }
   }
@@ -446,9 +473,11 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
   const { contentSafetyHash } = require('../src/content-safety');
   const pool = createPool(loadEnv());
   await runMigrations(pool);
+  const strategySnapshot = await testStrategySnapshot(pool);
   const repo = createRepository(pool);
   const previous = await snapshotBusinessSettings(pool);
   const [[previousConfig]] = await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const strategy = await testStrategySnapshot(pool);
   const [previousFacts] = await pool.execute('SELECT service, summary_json, active, updated_at FROM service_facts');
   const sessionId = randomUUID();
   const ctaUrl = 'https://cta.example.test/ndi';
@@ -469,8 +498,8 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE WHERE id=1',
         [JSON.stringify(settings), JSON.stringify({}), JSON.stringify(businessKnowledge)]);
       const id = randomUUID();
-      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,cta_url) VALUES (?,?,?,'generating',?,?,1,?)",
-        [id, new Date(Date.now() - 5000 - index), sessionId,settings.profileId,settings.targetAccountId,scenario==='missing_cta'?null:ctaUrl]);
+      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,cta_url,content_category_id,content_style_id,content_strategy_json) VALUES (?,?,?,'generating',?,?,1,?,?,?,?)",
+        [id, new Date(Date.now() - 5000 - index), sessionId,settings.profileId,settings.targetAccountId,scenario==='missing_cta'?null:ctaUrl,strategySnapshot.categoryId,strategySnapshot.styleId,strategySnapshot.json]);
       const body = scenario==='bad_caption'
         ? 'NDI menyediakan layanan teknologi untuk organisasi.'
         : 'NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n#NusaDataIndonesia';
@@ -510,18 +539,20 @@ test('MySQL fences a concurrent account switch against publication start', {skip
   const {createRepository}=require('../src/repository');const {createConfigurationService}=require('../src/configuration');const {contentSafetyHash}=require('../src/content-safety');
   const config=loadEnv();const pool=createPool(config);await runMigrations(pool);
   const priorSettings=await snapshotBusinessSettings(pool);
+  const strategyBefore=await snapshotContentStrategy(pool);
   const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);
   const version=Date.now();const sessionId=randomUUID();const profileId=`old-profile-${randomUUID()}`;const accountId=`old-account-${randomUUID()}`;
   const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
-  const knowledge=ndiKnowledge('https://cta.example.test/ndi');const id=randomUUID();
+  const knowledge=ndiKnowledge('https://cta.example.test/ndi');const strategy=await testStrategySnapshot(pool);const id=randomUUID();
   const caption=`NDI membantu organisasi menata informasi agar kebutuhan bisnis lebih mudah dipahami. Mari diskusikan layanan yang dapat mendukung kebutuhan tim Anda:\n\n${knowledge.ctaUrl}`;
   const payload={content:caption,targets:[{account_id:accountId}]};
   try{
     await deleteSlots(pool);
+    await enableTestContentStrategy(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
-    await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash,cta_url) VALUES (?,?,?,'ready',?,?,?,?,?,?,?,?,?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,caption,'ndi',JSON.stringify([]),JSON.stringify([]),contentSafetyHash({...settings,businessKnowledge:knowledge}),knowledge.ctaUrl]);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json) VALUES (?,?,?,'ready',?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,caption,'ndi',JSON.stringify([]),JSON.stringify([]),contentSafetyHash({...settings,businessKnowledge:knowledge}),knowledge.ctaUrl,strategy.categoryId,strategy.styleId,strategy.json]);
     const repository=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });const service=createConfigurationService({pool,config});
     const [started,switched]=await Promise.all([
       repository.startPublishing(id,{now:new Date()}),
@@ -538,6 +569,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(pool,priorSettings);
+    await restoreContentStrategy(pool,strategyBefore);
     await pool.end();
   }
 });
@@ -547,18 +579,20 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');
   const {createRepository}=require('../src/repository');const {contentSafetyHash}=require('../src/content-safety');
   const config=loadEnv();let firstPool=createPool(config);let secondPool=createPool(config);
+  await runMigrations(firstPool);
   const priorSettings=await snapshotBusinessSettings(firstPool);
+  const strategyBefore=await snapshotContentStrategy(firstPool);
   const [[priorConfig]]=await firstPool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);
   const version=(Number(priorConfig?.version)||0)+10_000_000;const sessionId=randomUUID();const profileId=`interval-profile-${randomUUID()}`;const accountId=`interval-account-${randomUUID()}`;
   const settings={schedule:{intervalMinutes:1,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
-  const knowledge=ndiKnowledge();const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
+  const knowledge=ndiKnowledge();const strategy=await testStrategySnapshot(firstPool);const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
   try{
-    await runMigrations(firstPool);
+    await enableTestContentStrategy(firstPool);
     await deleteSlots(firstPool);
     await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
-    await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?),(?,?,?,'pending',?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version]);
+    await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,content_category_id,content_style_id,content_strategy_json) VALUES (?,?,?,'pending',?,?,?,?,?,?),(?,?,?,'pending',?,?,?,?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,strategy.categoryId,strategy.styleId,strategy.json,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version,strategy.categoryId,strategy.styleId,strategy.json]);
     const firstRepository=createRepository(firstPool);const secondRepository=createRepository(secondPool);
     const claims=await Promise.all([firstRepository.claimDueSlot({now}),secondRepository.claimDueSlot({now})]);
     assert.equal(claims.filter(Boolean).length,1);
@@ -581,6 +615,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
     if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await firstPool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(firstPool,priorSettings);
+    await restoreContentStrategy(firstPool,strategyBefore);
     await firstPool.end();await secondPool.end();
   }
 });
@@ -589,11 +624,11 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   const {randomUUID}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
   const pool=createPool(loadEnv());await runMigrations(pool);
-  const priorSettings=await snapshotBusinessSettings(pool);const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const priorSettings=await snapshotBusinessSettings(pool);const strategyBefore=await snapshotContentStrategy(pool);const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`cadence-profile-${randomUUID()}`;const accountId=`cadence-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+20_000_000;
   const repository=createRepository(pool);const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge=ndiKnowledge();
   try{
-    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
+    await deleteSlots(pool);await enableTestContentStrategy(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     const intervals=[1,5,15,30,60,90,135];
     for(const intervalMinutes of intervals){
@@ -610,7 +645,7 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   }finally{
     await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
-    await restoreBusinessSettings(pool,priorSettings);await pool.end();
+    await restoreBusinessSettings(pool,priorSettings);await restoreContentStrategy(pool,strategyBefore);await pool.end();
   }
 });
 
