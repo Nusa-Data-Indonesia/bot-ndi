@@ -15,11 +15,11 @@ test('isolated MySQL bootstrap, version conflicts and account switch remain fail
     await pool.execute('DELETE FROM integration_config_history');
     await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.execute("UPDATE settings SET automation_enabled=FALSE,settings_json=JSON_REMOVE(settings_json,'$.integrationConfigInitialized','$.profileId','$.targetAccountId') WHERE id=1");
-    const env={tebar:{profileId:'profile_old',accountId:'account_old'},openRouter:{model:'vendor/model'}};
+    const env={tebar:{profileId:'profile_old',accountId:'account_old'},openRouter:{model:'vendor/model',reviewerModel:'vendor/reviewer'}};
     const service=createConfigurationService({pool,config:env});
     const concurrent=await Promise.all([service.bootstrap(),service.bootstrap()]);
     assert.equal(concurrent[0].version,1);assert.equal(concurrent[1].version,1);
-    const alternative=createConfigurationService({pool,config:{tebar:{profileId:'other',accountId:'other'},openRouter:{model:'other/model'}}});
+    const alternative=createConfigurationService({pool,config:{tebar:{profileId:'other',accountId:'other'},openRouter:{model:'other/model',reviewerModel:'other/reviewer'}}});
     assert.equal((await alternative.bootstrap()).accountId,'account_old');
     const updates=await Promise.allSettled([service.setModel({model:'vendor/a',expectedVersion:1}),service.setModel({model:'vendor/b',expectedVersion:1})]);
     assert.equal(updates.filter(x=>x.status==='fulfilled').length,1);
@@ -42,8 +42,8 @@ test('isolated MySQL bootstrap, version conflicts and account switch remain fail
     await pool.execute('DELETE FROM slots WHERE id=?',[slotId]);
     await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.execute('DELETE FROM integration_config_history');
-    for(const h of originalHistory) await pool.execute('INSERT INTO integration_config_history (version,profile_id,account_id,model,status,action,pending_profile_id,pending_account_id,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',[h.version,h.profile_id,h.account_id,h.model,h.status,h.action,h.pending_profile_id,h.pending_account_id,h.actor_id,h.created_at]);
-    for(const c of originalConfig) await pool.execute('INSERT INTO integration_config (id,version,profile_id,account_id,model,status,pending_profile_id,pending_account_id,pending_model,updated_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',[c.id,c.version,c.profile_id,c.account_id,c.model,c.status,c.pending_profile_id,c.pending_account_id,c.pending_model,c.updated_by,c.created_at,c.updated_at]);
+    for(const h of originalHistory) await pool.execute('INSERT INTO integration_config_history (version,profile_id,account_id,model,reviewer_model,status,action,pending_profile_id,pending_account_id,pending_model,pending_reviewer_model,actor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',[h.version,h.profile_id,h.account_id,h.model,h.reviewer_model,h.status,h.action,h.pending_profile_id,h.pending_account_id,h.pending_model,h.pending_reviewer_model,h.actor_id,h.created_at]);
+    for(const c of originalConfig) await pool.execute('INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status,pending_profile_id,pending_account_id,pending_model,pending_reviewer_model,updated_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[c.id,c.version,c.profile_id,c.account_id,c.model,c.reviewer_model,c.status,c.pending_profile_id,c.pending_account_id,c.pending_model,c.pending_reviewer_model,c.updated_by,c.created_at,c.updated_at]);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(settings.settings_json),encode(settings.knowledge_json),settings.automation_enabled]);
     await pool.end();
   }

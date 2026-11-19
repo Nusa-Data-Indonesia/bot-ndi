@@ -22,6 +22,11 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
   assert.doesNotMatch(integrations, /integration-model-form|integration-model-catalog|Model OpenRouter/);
   assert.match(ai, /role="combobox"/);
   assert.match(ai, /name="model"/);
+  assert.match(ai, /id="reviewer-model-form"/);
+  assert.match(ai, /id="reviewer-model-select"[^>]*name="model"/);
+  assert.match(ai, /Model Reviewer aktif/);
+  assert.match(ai, /id="integration-reviewer_model-history"/);
+  assert.doesNotMatch(ai, /name="reviewerEnabled"|name="reviewerEnabled"/);
   assert.match(html, /id="integration-account-error"[^>]*role="alert"/);
   assert.match(css, /\.integration-summary\{display:grid;grid-template-columns:1fr/);
   assert.match(integrations, /id="publication-closed-blockers-title"[^>]*>Publikasi terlambat ditemukan/);
@@ -106,6 +111,7 @@ test('OpenRouter selection exposes an accessible searchable listbox and explicit
   assert.match(app, /NOT_FOUND: 'Tidak ditemukan/);
   assert.match(app, /UNVERIFIED: 'Belum dapat diverifikasi/);
   assert.match(css, /\.model-options\{position:absolute/);
+  assert.match(ai, /Reviewer wajib menggunakan model berbeda/);
 });
 
 test('OpenRouter search matches model name, namespace, and ID without provider requests', () => {
@@ -147,9 +153,11 @@ test('integration refresh rejects stale responses, clears failed state and prese
   };
   node('#integration-account-form').elements = { profileId: { value: '' }, accountId: { value: '' } };
   node('#integration-model-form').elements = { model: { value: '' } };
+  node('#reviewer-model-form').elements = { model: { value: '' } };
+  node('#reviewer-model-select').options = [];
   const requests = [];
   const state = { integrations: null, integrationVerification: null };
-  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, renderModelValidation() {}, updateOpenRouterActions() {}, hide() {}, loadPublicationResolution: async () => true, renderProviderHolds() {} };
+  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, renderModelValidation() {}, renderReviewerModelOptions() {}, renderReviewerModelValidation() {}, updateReviewerModelActions() {}, updateOpenRouterActions() {}, hide() {}, loadPublicationResolution: async () => true, renderProviderHolds() {} };
   vm.createContext(context);
   const source = section('  function syncIntegrationControls()', "  $('#integration-account-form').addEventListener");
   vm.runInContext(source + '\nthis.loadIntegrations = loadIntegrations;', context);

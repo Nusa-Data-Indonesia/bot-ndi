@@ -11,6 +11,7 @@ const FAILURES = {
   approved_content_invalid: 'Sumber pengetahuan bisnis NDI tidak valid.',
   onboarding_incomplete: 'Tinjauan pengetahuan bisnis NDI belum lengkap.',
   business_knowledge_review_required: 'Pengetahuan bisnis NDI perlu ditinjau sebelum penerbitan.',
+  reviewer_model_required: 'Pilih dan verifikasi model Generator dan Reviewer yang berbeda sebelum otomasi dapat berjalan.',
   ai_not_configured: 'Penyedia AI belum dikonfigurasi.',
   ai_unauthorized: 'Penyedia AI menolak autentikasi.',
   ai_rate_limited: 'Penyedia AI sedang membatasi permintaan.',

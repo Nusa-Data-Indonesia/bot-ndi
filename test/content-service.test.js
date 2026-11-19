@@ -198,20 +198,39 @@ test('malformed or ambiguous semantic audit is recorded as unknown and fails clo
   }
 });
 
-test('a failed first content attempt can retry without truncating and retains correction context', async () => {
+test('a repairable overlong draft is revised and fully revalidated without truncation', async () => {
   const requests = [];
+  const reviews = [];
   let generationCalls = 0;
   const result = await generatePost(base, { generate: async (request) => {
     requests.push(request);
     if (request.system.includes('auditor fakta independen')) return JSON.stringify({ valid: true, factIds: [] });
     generationCalls++;
-    return generationCalls === 1 ? 'A'.repeat(501) : caption;
+    return 'A'.repeat(501);
+  }, review: async (request) => {
+    reviews.push(request);
+    return JSON.stringify({ decision: 'REVISE', revised_content: `${caption}\n#NusaDataIndonesia #TeknologiData\n${ctaUrl}`, rationale_code: 'SHORTENED_CAPTION' });
+  } });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.attempts, 1);
+  assert.equal(result.reviewed, true);
+  assert.ok([...result.text].length <= 500);
+  assert.equal(generationCalls, 1);
+  assert.equal(JSON.parse(reviews[0].user).violations[0].code, 'CAPTION_TOO_LONG');
+  assert.equal(requests.find((request) => !request.system.includes('auditor fakta independen')).maxTokens, 4096);
+});
+
+test('a technical Generator failure keeps the existing bounded generation retry', async () => {
+  let generationCalls = 0;
+  const result = await generatePost(base, { generate: async (request) => {
+    if (request.system.includes('auditor fakta independen')) return JSON.stringify({ valid: true, factIds: [] });
+    generationCalls++;
+    if (generationCalls === 1) throw Object.assign(new Error('temporary'), { code: 'network_error' });
+    return caption;
   } });
   assert.equal(result.status, 'ready');
   assert.equal(result.attempts, 2);
-  assert.ok([...result.text].length <= 500);
-  assert.ok(JSON.parse(requests.at(-2).user).correction.includes('CAPTION_TOO_LONG'));
-  assert.equal(requests.at(-2).maxTokens, requests[0].maxTokens);
+  assert.equal(generationCalls, 2);
 });
 
 test('capture and outcome hooks cannot block validation or reveal generated private data', async () => {
@@ -224,6 +243,7 @@ test('capture and outcome hooks cannot block validation or reveal generated priv
         if (request.system.includes('auditor fakta independen')) return JSON.stringify({ valid: true, factIds: [] });
         return ++generationCalls === 1 ? 'Kami memiliki 20 klien. Mari diskusikan layanan data untuk tim Anda.' : caption;
       },
+      review: async () => JSON.stringify({ decision: 'REVISE', revised_content: `${caption}\n#NusaDataIndonesia #TeknologiData\n${ctaUrl}`, rationale_code: 'REMOVED_UNSUPPORTED_CLAIM' }),
       captureFailure: (event) => { findings.push(event); return new Promise(() => {}); },
       recordOutcome: (event) => { outcomes.push(event); throw new Error('optional observation unavailable'); },
     }),
@@ -232,7 +252,7 @@ test('capture and outcome hooks cannot block validation or reveal generated priv
   assert.equal(result.status, 'ready');
   assert.ok(findings.some((finding) => finding.findingId === 'UNSUPPORTED_NUMERIC_CLAIM'));
   assert.ok(findings.every((finding) => !JSON.stringify(finding).includes('20 klien')));
-  assert.deepEqual(outcomes.map((item) => item.outcome), ['CONTEXTUAL_FAILED', 'PASSED']);
+  assert.deepEqual(outcomes.map((item) => item.outcome), ['PASSED']);
 });
 
 test('attempt reservations, transitions and retry ordinals remain durable for NDI', async () => {
@@ -242,15 +262,16 @@ test('attempt reservations, transitions and retry ordinals remain durable for ND
     generate: async (request) => request.system.includes('auditor fakta independen')
       ? JSON.stringify({ valid: true, factIds: [] })
       : (++id === 1 ? 'Kami memiliki 20 klien. Mari diskusikan layanan data untuk tim Anda.' : caption),
+    review: async () => JSON.stringify({ decision: 'REVISE', revised_content: `${caption}\n#NusaDataIndonesia #TeknologiData\n${ctaUrl}`, rationale_code: 'REMOVED_UNSUPPORTED_CLAIM' }),
     attemptLifecycle: {
       reserve: async (reservation) => { records.push({ type: 'reserve', ...reservation }); return { attempt_id: `attempt-${records.length}`, state: 'reserved' }; },
       transition: async (attemptId, state, details = {}) => { records.push({ type: 'transition', attemptId, state, ...details }); },
     },
   });
   assert.equal(result.status, 'ready');
-  assert.deepEqual(records.filter((item) => item.type === 'reserve').map((item) => item.operationId), ['slot-attempts:gen:1', 'slot-attempts:gen:2']);
+  assert.deepEqual(records.filter((item) => item.type === 'reserve').map((item) => item.operationId), ['slot-attempts:gen:1']);
   assert.deepEqual(records.filter((item) => item.type === 'transition').map((item) => item.state), [
-    'generating', 'validating', 'contextual_failed', 'generating', 'validating', 'validating', 'passed',
+    'generating', 'validating', 'validating', 'passed',
   ]);
 });
 

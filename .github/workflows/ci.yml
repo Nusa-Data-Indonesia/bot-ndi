@@ -71,37 +71,37 @@ jobs:
           DB_NAME: bot_ndi_test_018
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/migration-018.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/migration-018.mysql.integration.test.js
       - name: Verify Learning schema upgrade
         env:
           DB_NAME: bot_ndi_test_upgrade
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/learning-upgrade.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/learning-upgrade.mysql.integration.test.js
       - name: Verify publication resolution migration 020
         env:
           DB_NAME: bot_ndi_test_publication_upgrade
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/publication-resolution-upgrade.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/publication-resolution-upgrade.mysql.integration.test.js
       - name: Verify publication fence concurrency
         env:
           DB_NAME: bot_ndi_test_publication_upgrade
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/publication-fence.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/publication-fence.mysql.integration.test.js
       - name: Verify publication resolution legacy closure
         env:
           DB_NAME: bot_ndi_test_publication_upgrade
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/publication-resolution-legacy.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/publication-resolution-legacy.mysql.integration.test.js
       - name: Verify NDI business migration against legacy data
         env:
           DB_NAME: bot_ndi_test_ndi_upgrade
           DB_USER: root
           DB_PASSWORD: root-test-password-only
-        run: node --test test/ndi-migration.mysql.integration.test.js
+        run: NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test test/ndi-migration.mysql.integration.test.js
       - name: Validate deployment script syntax
         run: bash -n scripts/deploy-homelab.sh
       - name: Validate local Docker image build

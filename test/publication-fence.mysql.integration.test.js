@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
 const databaseName = 'bot_ndi_test_publication_upgrade';
 const enabled = process.env.NODE_ENV === 'test' && process.env.DB_NAME === databaseName
@@ -16,7 +16,7 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
   const { createRepository } = require('../src/repository');
   const pool = createPool(loadEnv());
   const recoveryPool = createPool(loadEnv());
-  const ids = [randomUUID(), randomUUID(), randomUUID()];
+  const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
   const requestIds = [randomUUID(), randomUUID()];
   const sessionId = randomUUID();
   const profileId = `fence-profile-${randomUUID()}`;
@@ -38,9 +38,9 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
     savedAutomation = savedSettings.automation_enabled;
     [[savedIntegration]] = await pool.query('SELECT * FROM integration_config WHERE id=1');
     if (savedIntegration) {
-      await pool.execute("UPDATE integration_config SET profile_id=?,account_id=?,status='ACTIVE',version=version+1 WHERE id=1", [profileId, accountId]);
+      await pool.execute("UPDATE integration_config SET profile_id=?,account_id=?,model='test/generator',reviewer_model='test/reviewer',status='ACTIVE',version=version+1 WHERE id=1", [profileId, accountId]);
     } else {
-      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE')", [profileId, accountId]);
+      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,1,?,?,'test/generator','test/reviewer','ACTIVE')", [profileId, accountId]);
       insertedIntegration = true;
     }
     const [admin] = await pool.execute('INSERT INTO admins (email,password_hash) VALUES (?,?)', [`fence-${randomUUID()}@example.test`, 'test-only-password-hash']);
@@ -108,6 +108,11 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
     assert.equal((await repository.getPublicationSlot(ids[0])).status, 'admin_closed_unknown');
     assert.deepEqual(events, ['provider-stub-entered', 'outcome-recorded', 'fence-committed']);
     assert.deepEqual(closeEvents, ['close-committed']);
+    let [[unknownEvidence]] = await pool.execute('SELECT COUNT(*) AS count FROM publication_unknown_events WHERE slot_id=?', [ids[0]]);
+    assert.equal(Number(unknownEvidence.count), 1);
+    let [[thresholdAlerts]] = await pool.execute(`SELECT COUNT(*) AS count FROM publication_unknown_threshold_alerts a
+      JOIN publication_unknown_events e ON e.id=a.threshold_event_id WHERE e.slot_id IN (${ids.map(() => '?').join(',')})`, ids);
+    assert.equal(Number(thresholdAlerts.count), 0);
 
     await pool.execute('UPDATE slots SET publish_started_at=? WHERE id IN (?,?)', [staleAt, ids[1], ids[2]]);
     const recoveredAfterPause = await secondRepository.recoverStalePublishing({ now: new Date(), slotIds: [ids[1]] });
@@ -116,6 +121,24 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
     assert.equal((await repository.getPublicationSlot(ids[2])).status, 'publishing');
     const recoveredOutOfScope = await secondRepository.recoverStalePublishing({ now: new Date() });
     assert.ok(recoveredOutOfScope.includes(ids[2]), 'the unrelated slot remains recoverable by a later global sweep');
+    await pool.execute('UPDATE slots SET publish_started_at=? WHERE id=?', [staleAt, ids[3]]);
+    assert.deepEqual(await secondRepository.recoverStalePublishing({ now: new Date(), slotIds: [ids[3]] }), [ids[3]]);
+    [[unknownEvidence]] = await pool.execute(`SELECT COUNT(*) AS count FROM publication_unknown_events WHERE slot_id IN (${ids.map(() => '?').join(',')})`, ids);
+    assert.equal(Number(unknownEvidence.count), 4);
+    [[thresholdAlerts]] = await pool.execute(`SELECT COUNT(*) AS count FROM publication_unknown_threshold_alerts a
+      JOIN publication_unknown_events e ON e.id=a.threshold_event_id WHERE e.slot_id IN (${ids.map(() => '?').join(',')})`, ids);
+    assert.equal(Number(thresholdAlerts.count), 1);
+    const [[automationAfterThreshold]] = await pool.execute('SELECT automation_enabled FROM settings WHERE id=1');
+    assert.equal(Boolean(automationAfterThreshold.automation_enabled), true, 'unknown threshold alerts must not pause automation');
+    const unknownNoticeKeys = ids.map(id => createHash('sha256').update(`unknown-slot:${id}:1`).digest('hex'));
+    const [[queuedNotices]] = await pool.execute(`SELECT COUNT(*) AS count FROM notification_outbox
+      WHERE dedupe_key IN (${unknownNoticeKeys.map(() => '?').join(',')})`, unknownNoticeKeys);
+    assert.equal(Number(queuedNotices.count), 4);
+    const [thresholdNoticeRows] = await pool.execute(`SELECT dedupe_key FROM publication_unknown_threshold_alerts a
+      JOIN publication_unknown_events e ON e.id=a.threshold_event_id WHERE e.slot_id IN (${ids.map(() => '?').join(',')})`, ids);
+    assert.equal(thresholdNoticeRows.length, 1);
+    const [[queuedThresholdNotice]] = await pool.execute('SELECT COUNT(*) AS count FROM notification_outbox WHERE dedupe_key=?', [thresholdNoticeRows[0].dedupe_key]);
+    assert.equal(Number(queuedThresholdNotice.count), 1);
     await repository.closeUnknownPublication(input(ids[1], requestIds[1]));
     let staleProviderStubCalled = false;
     const staleWorkerResult = await repository.withPublicationFence(ids[1], async () => {
@@ -124,20 +147,37 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
     assert.equal(staleWorkerResult, false);
     assert.equal(staleProviderStubCalled, false, 'a stale worker must not reach the provider callback after closure');
 
-    const [[eventsForSlots]] = await pool.execute('SELECT COUNT(*) AS count FROM publication_resolution_events WHERE slot_id IN (?,?)', ids);
+    const [[migrationSnapshot]] = await pool.execute(`SELECT s.status,s.request_payload,s.idempotency_key,s.tebar_profile_id,s.tebar_account_id,
+      s.unknown_occurrence_count,i.model,i.reviewer_model FROM slots s JOIN integration_config i ON i.id=1 WHERE s.id=?`, [ids[2]]);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='024_dual_ai_and_unknown_continuation.sql'");
+    assert.deepEqual(await runMigrations(pool), ['024_dual_ai_and_unknown_continuation.sql']);
+    const [[migrationAfter]] = await pool.execute(`SELECT s.status,s.request_payload,s.idempotency_key,s.tebar_profile_id,s.tebar_account_id,
+      s.unknown_occurrence_count,i.model,i.reviewer_model FROM slots s JOIN integration_config i ON i.id=1 WHERE s.id=?`, [ids[2]]);
+    assert.deepEqual(migrationAfter, migrationSnapshot);
+    [[unknownEvidence]] = await pool.execute(`SELECT COUNT(*) AS count FROM publication_unknown_events WHERE slot_id IN (${ids.map(() => '?').join(',')})`, ids);
+    assert.equal(Number(unknownEvidence.count), 4, 'migration rerun must not duplicate occurrence history');
+
+    const [[eventsForSlots]] = await pool.execute('SELECT COUNT(*) AS count FROM publication_resolution_events WHERE slot_id IN (?,?)', [ids[0], ids[1]]);
     assert.equal(Number(eventsForSlots.count), 2);
   } finally {
     releaseProviderStub?.();
     await fencePromise?.catch(() => {});
     await pool.execute('UPDATE settings SET settings_json=?,automation_enabled=? WHERE id=1', [JSON.stringify(savedSettings?.settings_json || {}), savedAutomation ?? false]).catch(() => {});
     if (insertedIntegration) await pool.execute('DELETE FROM integration_config WHERE id=1').catch(() => {});
-    else if (savedIntegration) await pool.execute(`UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=?,updated_at=? WHERE id=1`,
-      [savedIntegration.version, savedIntegration.profile_id, savedIntegration.account_id, savedIntegration.model, savedIntegration.status,
-        savedIntegration.pending_profile_id, savedIntegration.pending_account_id, savedIntegration.pending_model, savedIntegration.updated_by, savedIntegration.updated_at]).catch(() => {});
+    else if (savedIntegration) await pool.execute(`UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=?,updated_at=? WHERE id=1`,
+      [savedIntegration.version, savedIntegration.profile_id, savedIntegration.account_id, savedIntegration.model, savedIntegration.reviewer_model, savedIntegration.status,
+        savedIntegration.pending_profile_id, savedIntegration.pending_account_id, savedIntegration.pending_model, savedIntegration.pending_reviewer_model, savedIntegration.updated_by, savedIntegration.updated_at]).catch(() => {});
     if (adminId) {
-      await pool.execute('DELETE FROM publication_resolution_events WHERE slot_id IN (?,?)', ids).catch(() => {});
-      await pool.execute('DELETE FROM activity_logs WHERE slot_id IN (?,?)', ids).catch(() => {});
-      await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key IN (?,?)', requestIds.map(id => require('node:crypto').createHash('sha256').update(`publication-resolution:${id}`).digest('hex'))).catch(() => {});
+      const [thresholdRows] = await pool.execute(`SELECT a.dedupe_key FROM publication_unknown_threshold_alerts a
+        JOIN publication_unknown_events e ON e.id=a.threshold_event_id WHERE e.slot_id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => [[]]);
+      const slotNoticeKeys = ids.map(id => createHash('sha256').update(`unknown-slot:${id}:1`).digest('hex'));
+      const outboxKeys = [...slotNoticeKeys, ...thresholdRows.map(row => row.dedupe_key),
+        ...requestIds.map(id => createHash('sha256').update(`publication-resolution:${id}`).digest('hex'))];
+      await pool.execute(`DELETE FROM notification_outbox WHERE dedupe_key IN (${outboxKeys.map(() => '?').join(',')})`, outboxKeys).catch(() => {});
+      await pool.execute(`DELETE a FROM publication_unknown_threshold_alerts a JOIN publication_unknown_events e ON e.id=a.threshold_event_id WHERE e.slot_id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => {});
+      await pool.execute(`DELETE FROM publication_unknown_events WHERE slot_id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => {});
+      await pool.execute('DELETE FROM publication_resolution_events WHERE slot_id IN (?,?)', [ids[0],ids[1]]).catch(() => {});
+      await pool.execute(`DELETE FROM activity_logs WHERE slot_id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => {});
       await pool.execute('DELETE FROM audit_logs WHERE admin_id=?', [adminId]).catch(() => {});
       await pool.execute(`DELETE FROM slots WHERE id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => {});
       await pool.execute('DELETE FROM admins WHERE id=?', [adminId]).catch(() => {});

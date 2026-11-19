@@ -196,6 +196,7 @@ test('dashboard refresh ignores stale responses and exposes an error state on fa
 test('configuration history keeps account and model entries on their matching pages', () => {
   const nodes = new Map();
   const context = {
+    state: { integrations: { configuration: {} } },
     $: (selector) => { if (!nodes.has(selector)) nodes.set(selector, fakeNode()); return nodes.get(selector); },
     document: { createElement: () => fakeNode() },
   };
@@ -215,4 +216,25 @@ test('configuration history keeps account and model entries on their matching pa
   assert.equal(modelRows.length, 2);
   assert.doesNotMatch(accountRows[0].children[1].textContent, /Model/);
   assert.doesNotMatch(modelRows[0].children[1].textContent, /Profile|Akun/);
+});
+
+test('Reviewed history marker is separate from publication status and only appears when flagged', () => {
+  const nodes = new Map();
+  const context = {
+    $: (selector) => { if (!nodes.has(selector)) nodes.set(selector, fakeNode()); return nodes.get(selector); },
+    document: { createElement: () => fakeNode(), createTextNode: (textContent) => ({ textContent }) },
+    statusLabels: { failed: 'Gagal', unknown: 'Belum diketahui' },
+  };
+  vm.createContext(context);
+  vm.runInContext(sourceBetween('  function renderPosts(', '  function renderActivity(') + '\nthis.renderPosts = renderPosts;', context);
+  context.renderPosts([
+    { status: 'failed', reviewed: true, caption: 'Caption diperbaiki sebelum publikasi gagal.' },
+    { status: 'unknown', reviewed: false, caption: 'Hasil publikasi belum diketahui.' },
+  ]);
+  const [reviewedRow, ordinaryRow] = nodes.get('#posts-table').children;
+  assert.equal(reviewedRow.children[2].children[0].textContent, 'Gagal');
+  assert.equal(reviewedRow.children[2].children[2].textContent, 'Reviewed');
+  assert.equal(reviewedRow.children[2].children[2].getAttribute('aria-label'), 'Caption berhasil diperbaiki oleh AI Reviewer');
+  assert.equal(ordinaryRow.children[2].children.length, 1);
+  assert.equal(ordinaryRow.children[2].children[0].textContent, 'Belum diketahui');
 });

@@ -14,7 +14,7 @@ function registerWebhookRoutes(app, { config, repository, services, webhookRateL
         secret: config.tebar.webhookSecret,
         repository,
       });
-      if (result.status < 300 && result.notificationCode && services.flushNotifications) {
+      if (result.status < 300 && services.flushNotifications) {
         void services.flushNotifications().catch(() => {});
       }
       return res.status(result.status).json(result.body);

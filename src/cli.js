@@ -135,6 +135,11 @@ async function main(argv = process.argv.slice(2)) {
       if (!config.openRouter.apiKey) throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' });
       return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model, enabled: config.externalIntegrationsEnabled }).generate;
     };
+    const reviewerForModel = async (model) => {
+      assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
+      if (!config.openRouter.apiKey) throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' });
+      return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model, enabled: config.externalIntegrationsEnabled }).generate;
+    };
     if (command === 'admin:create') {
       const rl = readline.createInterface({ input: stdin, output: stdout });
       try {
@@ -159,10 +164,10 @@ async function main(argv = process.argv.slice(2)) {
       if (!publisher) { stdout.write('{"skipped":"tebar_not_configured"}\n'); await pool.end(); return; }
       const telegram = config.telegram.botToken && config.telegram.chatId
         ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: config.externalIntegrationsEnabled }) : null;
-      const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
+      const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram, logger }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: contentWithLearning, timezone: /** @type {{ schedule?: { timezone?: string } }} */ (state.settings || {}).schedule?.timezone || config.timezone });
+        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, reviewerForModel, notifier, logger, content: contentWithLearning, timezone: /** @type {{ schedule?: { timezone?: string } }} */ (state.settings || {}).schedule?.timezone || config.timezone });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Bot NDI automation: system_error. Periksa status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
@@ -217,7 +222,7 @@ async function main(argv = process.argv.slice(2)) {
     services.aiConfigured = config.externalIntegrationsEnabled === true && Boolean(config.openRouter.apiKey);
     const telegram = config.externalIntegrationsEnabled === true && config.telegram.botToken && config.telegram.chatId
       ? require('./providers/telegram').createTelegramClient({ ...config.telegram, enabled: true }) : null;
-    const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
+    const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram, logger }) : null;
     services.reconcileLinkedPublication = async ({ slotId }) => {
       assertExternalIntegrationsEnabled(config.externalIntegrationsEnabled);
       const linked = await repository.getPublicationSlot(slotId);
@@ -310,6 +315,7 @@ async function main(argv = process.argv.slice(2)) {
         publisher: await publisherForProfile(effective.profileId),
         publisherForProfile,
         generatorForModel,
+        reviewerForModel,
         notifier,
         logger,
         content: contentWithLearning,

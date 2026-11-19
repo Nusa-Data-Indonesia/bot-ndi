@@ -40,15 +40,31 @@ async function testStrategySnapshot(pool) {
 }
 
 async function deleteSlot(pool,id) {
+  await deleteDualAiSlotData(pool,id);
   await pool.execute('DELETE FROM generation_attempts WHERE slot_id=?',[id]);
   await pool.execute('DELETE FROM generation_slot_claims WHERE slot_id=?',[id]);
   await pool.execute('DELETE FROM slots WHERE id=?',[id]);
 }
 
 async function deleteSlots(pool) {
+  await deleteDualAiSlotData(pool);
   await pool.execute('DELETE FROM generation_attempts');
   await pool.execute('DELETE FROM generation_slot_claims');
   await pool.execute('DELETE FROM slots');
+}
+
+async function deleteDualAiSlotData(pool,id) {
+  const filter=id?' WHERE slot_id=?':'';
+  const [events]=await pool.execute(`SELECT id,slot_id,occurrence_no FROM publication_unknown_events${filter}`,id?[id]:[]);
+  if(events.length){
+    const eventIds=events.map(event=>event.id);
+    const [alerts]=await pool.execute(`SELECT id,dedupe_key FROM publication_unknown_threshold_alerts WHERE threshold_event_id IN (${eventIds.map(()=>'?').join(',')})`,eventIds);
+    const keys=[...events.map(event=>require('node:crypto').createHash('sha256').update(`unknown-slot:${event.slot_id}:${event.occurrence_no}`).digest('hex')),...alerts.map(alert=>alert.dedupe_key)];
+    if(keys.length)await pool.execute(`DELETE FROM notification_outbox WHERE dedupe_key IN (${keys.map(()=>'?').join(',')})`,keys);
+    if(alerts.length)await pool.execute(`DELETE FROM publication_unknown_threshold_alerts WHERE id IN (${alerts.map(()=>'?').join(',')})`,alerts.map(alert=>alert.id));
+    await pool.execute(`DELETE FROM publication_unknown_events WHERE id IN (${eventIds.map(()=>'?').join(',')})`,eventIds);
+  }
+  await pool.execute(`DELETE FROM slot_content_review_attempts${filter}`,id?[id]:[]);
 }
 
 test('confirmed cancellation atomically settles provider state across repository restart', {skip:!enabled}, async()=>{
@@ -355,7 +371,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[
         JSON.stringify(testSettings),JSON.stringify({}),JSON.stringify(ndiKnowledge()),
       ]);
-      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[testSettings.profileId,testSettings.targetAccountId]);
+      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,1,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE'",[testSettings.profileId,testSettings.targetAccountId]);
       // This is an explicitly isolated destructive-test database. Remove prior
       // integration-run slots so their cadence cannot affect the concurrency case.
       await deleteSlots(pool);
@@ -491,7 +507,7 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
     await deleteSlots(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',
       [JSON.stringify(settings), JSON.stringify({}), JSON.stringify(businessKnowledge)]);
-    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[settings.profileId,settings.targetAccountId]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,1,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE'",[settings.profileId,settings.targetAccountId]);
     const cases = ['valid', 'cta_edited', 'knowledge_changed', 'hashtags_changed', 'approval_revoked', 'missing_cta', 'legacy', 'bad_caption'];
     for (const [index, scenario] of cases.entries()) {
       await deleteSlots(pool);
@@ -526,8 +542,8 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
     await pool.execute('DELETE FROM service_facts');
     for (const fact of previousFacts) await pool.execute('INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES (?,?,?,?)', [fact.service, encodeJson(fact.summary_json), fact.active, fact.updated_at]);
     await restoreBusinessSettings(pool,previous);
-    if(previousConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',
-      [previousConfig.version,previousConfig.profile_id,previousConfig.account_id,previousConfig.model,previousConfig.status,previousConfig.pending_profile_id,previousConfig.pending_account_id,previousConfig.pending_model,previousConfig.updated_by]);
+    if(previousConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1',
+      [previousConfig.version,previousConfig.profile_id,previousConfig.account_id,previousConfig.model,previousConfig.reviewer_model,previousConfig.status,previousConfig.pending_profile_id,previousConfig.pending_account_id,previousConfig.pending_model,previousConfig.pending_reviewer_model,previousConfig.updated_by]);
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.end();
   }
@@ -551,7 +567,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
     await deleteSlots(pool);
     await enableTestContentStrategy(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
-    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,?,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL,pending_reviewer_model=NULL",[version,profileId,accountId]);
     await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json) VALUES (?,?,?,'ready',?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,caption,'ndi',JSON.stringify([]),JSON.stringify([]),contentSafetyHash({...settings,businessKnowledge:knowledge}),knowledge.ctaUrl,strategy.categoryId,strategy.styleId,strategy.json]);
     const repository=createRepository(pool, { allowedCtaHosts: ["shop.example.test"] });const service=createConfigurationService({pool,config});
     const [started,switched]=await Promise.all([
@@ -566,7 +582,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
   }finally{
     await deleteSlots(pool);
     await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
-    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
+    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.reviewer_model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.pending_reviewer_model,priorConfig.updated_by]);
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(pool,priorSettings);
     await restoreContentStrategy(pool,strategyBefore);
@@ -591,7 +607,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
     await enableTestContentStrategy(firstPool);
     await deleteSlots(firstPool);
     await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
-    await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,?,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL,pending_reviewer_model=NULL",[version,profileId,accountId]);
     await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,content_category_id,content_style_id,content_strategy_json) VALUES (?,?,?,'pending',?,?,?,?,?,?),(?,?,?,'pending',?,?,?,?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,strategy.categoryId,strategy.styleId,strategy.json,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version,strategy.categoryId,strategy.styleId,strategy.json]);
     const firstRepository=createRepository(firstPool);const secondRepository=createRepository(secondPool);
     const claims=await Promise.all([firstRepository.claimDueSlot({now}),secondRepository.claimDueSlot({now})]);
@@ -612,7 +628,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
   }finally{
     await deleteSlots(firstPool);
     await firstPool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
-    if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
+    if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.reviewer_model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.pending_reviewer_model,priorConfig.updated_by]);
     else await firstPool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(firstPool,priorSettings);
     await restoreContentStrategy(firstPool,strategyBefore);
@@ -629,7 +645,7 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   const repository=createRepository(pool);const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Jakarta'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge=ndiKnowledge();
   try{
     await deleteSlots(pool);await enableTestContentStrategy(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
-    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,?,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL,pending_reviewer_model=NULL",[version,profileId,accountId]);
     const intervals=[1,5,15,30,60,90,135];
     for(const intervalMinutes of intervals){
       await deleteSlots(pool);
@@ -644,7 +660,7 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
     }
   }finally{
     await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
-    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
+    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.reviewer_model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.pending_reviewer_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(pool,priorSettings);await restoreContentStrategy(pool,strategyBefore);await pool.end();
   }
 });
@@ -658,7 +674,7 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
   const repository=createRepository(pool);const settings={schedule:{intervalMinutes:60,timezone:'UTC'},hashtags:[],targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true,nextSlotAt:new Date(Date.now()+70*60_000).toISOString()};const knowledge=ndiKnowledge();const slotId=randomUUID();const scheduledAt=new Date(Date.now()+10*60_000);
   try{
     await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=TRUE,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify({}),JSON.stringify(knowledge)]);
-    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,?,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL,pending_reviewer_model=NULL",[version,profileId,accountId]);
     await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[slotId,scheduledAt,sessionId,profileId,accountId,version]);
     await repository.saveSettings({schedule:{hours:0,minutes:5,timezone:'UTC'},hashtags:['#NusaDataIndonesia']},null);
     const [[afterSave]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');const afterSaveSettings=JSON.parse(encode(afterSave.settings_json));
@@ -674,7 +690,7 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
     assert.equal(new Date(rescheduled.nextSlotAt).getTime(),scheduledAt.getTime()+5*60_000,'the new interval controls the slot after the preserved one');
   }finally{
     await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
-    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
+    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.reviewer_model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.pending_reviewer_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await restoreBusinessSettings(pool,priorSettings);await pool.end();
   }
 });

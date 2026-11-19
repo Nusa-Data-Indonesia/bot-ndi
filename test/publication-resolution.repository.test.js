@@ -87,9 +87,17 @@ test('stale publishing recovery accepts a validated slot allowlist and does no q
   let connections = 0;
   const connection = {
     beginTransaction: async () => {},
+    query: async (sql, params) => {
+      statements.push({ sql, params });
+      return [[]];
+    },
     execute: async (sql, params) => {
       statements.push({ sql, params });
       if (sql.includes('SELECT id FROM slots')) return [[{ id: 'slot-a' }]];
+      if (sql.includes('SELECT unknown_occurrence_count')) return [[{ unknown_occurrence_count: 1,
+        scheduled_at: new Date('2026-11-17T00:00:00.000Z'), publish_started_at: new Date('2026-11-17T00:00:00.000Z') }]];
+      if (sql.includes('SELECT COUNT(*) AS count FROM publication_unknown_events')) return [[{ count: 1 }]];
+      if (sql.includes('SELECT id FROM publication_unknown_threshold_alerts')) return [[]];
       return [{ affectedRows: 1 }];
     },
     commit: async () => {},
@@ -124,7 +132,7 @@ test('automation re-enable scopes unresolved blockers to the configured target a
       if (sql.includes('content_strategy_settings')) return [[{ enabled: 1 }]];
       if (sql.includes("status='published'") && sql.includes('provider_published_at IS NULL')) return [[]];
       if (sql.includes('GROUP BY provider_published_at')) return [[]];
-      if (sql.includes('integration_config')) return [[{ status: 'ACTIVE', profile_id: 'profile-current', account_id: 'account-current', model: 'vendor/model' }]];
+      if (sql.includes('integration_config')) return [[{ status: 'ACTIVE', profile_id: 'profile-current', account_id: 'account-current', model: 'vendor/generator', reviewer_model: 'vendor/reviewer' }]];
       if (sql.includes('SELECT id FROM slots')) return [[{ id: 'relevant-blocker' }]];
       return [[]];
     },
