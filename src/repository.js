@@ -8,12 +8,17 @@ const { validateNdiSettings } = require('./ndi-settings');
 const { validateBusinessKnowledge } = require('./business-knowledge');
 const { contentStrategyReadiness, selectUniform, validateStrategyInput } = require('./content-strategy');
 const { OFFICIAL_URL } = require('./website-knowledge-sync');
+const { hasDistinctModels } = require('./configuration');
 
 const STALE_PUBLISHING_AFTER_MS = 120_000;
 
 const json = (value, fallback = {}) => {
+  if (value === null || value === undefined) return fallback;
   if (value && typeof value === 'object' && !Buffer.isBuffer(value)) return value;
-  try { return JSON.parse(value); } catch { return fallback; }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed === null ? fallback : parsed;
+  } catch { return fallback; }
 };
 const safeId = (value) => String(value);
 function loginThrottleKeys(email, ip) {
@@ -703,7 +708,7 @@ function createRepository(pool) {
   }
   async function deleteSession(tokenHash) { await pool.execute('DELETE FROM sessions WHERE token_hash=?', [tokenHash]); }
   async function deleteAdminSessions(adminId) { await pool.execute('DELETE FROM sessions WHERE admin_id=?', [adminId]); }
-  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,content_strategy_json,provider_published_at,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),contentStrategy:json(r.content_strategy_json,null),providerPublishedAt:r.provider_published_at,createdAt:r.created_at,completedAt:r.completed_at})); }
+  async function listSlots(limit=100) { const [rows]=await selectQuery(pool, 'SELECT id,scheduled_at,status,pillar,provider_post_id,provider_status,caption,error_code,cancellation_status,fact_bearing,fact_ids,content_strategy_json,reviewed,review_metadata_json,provider_published_at,created_at,completed_at FROM slots ORDER BY scheduled_at DESC LIMIT ?', [Math.max(1,Math.min(1000,Number(limit)||100))]); return rows.map((r)=>({id:r.id,scheduledAt:r.scheduled_at,status:r.status,pillar:r.pillar,providerPostId:r.provider_post_id,providerStatus:r.provider_status,caption:r.caption,errorCode:r.error_code,cancellationStatus:r.cancellation_status,factBearing:Boolean(r.fact_bearing),factIds:json(r.fact_ids,[]),contentStrategy:json(r.content_strategy_json,null),reviewed:Boolean(r.reviewed),reviewMetadata:json(r.review_metadata_json,null),providerPublishedAt:r.provider_published_at,createdAt:r.created_at,completedAt:r.completed_at})); }
   async function listActivity(limit=100) { const [rows]=await selectQuery(pool, 'SELECT event,details_json,created_at FROM activity_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.event,...json(r.details_json),createdAt:r.created_at})); }
   async function healthCheck() { await selectQuery(pool, 'SELECT 1'); return true; }
   async function listAudit(limit=100) { const [rows]=await selectQuery(pool, 'SELECT action,details_json,created_at FROM audit_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.action,...json(r.details_json),createdAt:r.created_at})); }
@@ -722,7 +727,10 @@ function createRepository(pool) {
         if (current?.business_knowledge_approved !== 1 && current?.business_knowledge_approved !== true || !businessSettings.valid) {
           throw Object.assign(new Error('BUSINESS_KNOWLEDGE_REVIEW_REQUIRED'), { code: 'BUSINESS_KNOWLEDGE_REVIEW_REQUIRED', status: 409 });
         }
-        const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
+        const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id,model,reviewer_model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
+        if (!hasDistinctModels(integration?.model, integration?.reviewer_model)) {
+          throw Object.assign(new Error('REVIEWER_MODEL_REQUIRED'), { code: 'REVIEWER_MODEL_REQUIRED', status: 409 });
+        }
         if (integration?.status !== 'ACTIVE' || !integration.profile_id || !integration.account_id || !integration.model
           || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
           throw Object.assign(new Error('INTEGRATION_NOT_READY'), { code: 'INTEGRATION_NOT_READY', status: 409 });
@@ -776,8 +784,8 @@ function createRepository(pool) {
       await c.beginTransaction();
       const [[state]]=await selectQuery(c, 'SELECT settings_json FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const settings=json(state?.settings_json);
-      const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
-      if(integration?.status!=='ACTIVE'||!integration.profile_id||!integration.account_id||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.rollback();return null;}
+      const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model,reviewer_model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
+      if(integration?.status!=='ACTIVE'||!integration.profile_id||!integration.account_id||!hasDistinctModels(integration.model,integration.reviewer_model)||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.rollback();return null;}
       if(sessionId===undefined)sessionId=settings.automationSessionId||null;
       const id=randomUUID();
       await c.execute("INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[id,scheduledAt,sessionId,integration.profile_id,integration.account_id,integration.version]);
@@ -789,24 +797,29 @@ function createRepository(pool) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
-      const [[integration]] = await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
+      const [[state]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved,business_knowledge_version FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+      const [[integration]] = await selectQuery(c, 'SELECT version,status,profile_id,account_id,model,reviewer_model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const settings = json(state?.settings_json);
       const knowledge = json(state?.business_knowledge_json, {});
       const validated = validateNdiSettings({ schedule: settings.schedule || {}, hashtags: settings.hashtags || [], businessKnowledge: knowledge });
       const strategyStatus = await getStrategyStatus(c);
       const sessionId = settings.automationSessionId;
+      if (state?.automation_enabled && integration?.status === 'ACTIVE' && !hasDistinctModels(integration.model, integration.reviewer_model)) {
+        await c.commit();
+        return { blocked: 'REVIEWER_MODEL_REQUIRED' };
+      }
       if (!state?.automation_enabled || state.business_knowledge_approved !== 1 && state.business_knowledge_approved !== true
         || !strategyStatus.ready || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
-        || integration?.status !== 'ACTIVE' || !integration.model || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
+        || integration?.status !== 'ACTIVE' || !hasDistinctModels(integration.model, integration.reviewer_model)
+        || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
         if (state?.automation_enabled && !strategyStatus.ready) { await c.commit(); return { blocked: strategyStatus.reasonCode }; }
         await c.rollback();
         return null;
       }
       if (await hasProviderHold(c, integration.profile_id, integration.account_id)) { await c.commit(); return null; }
-      const [[inFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
+      const [[inFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
       if (inFlight) { await c.commit(); return null; }
-      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await selectQuery(c, "SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model,openrouter_reviewer_model,business_knowledge_snapshot_json,business_knowledge_snapshot_version,generation_settings_snapshot_json,reviewed,review_metadata_json FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
       let strategySnapshot = json(slot.content_strategy_json, null);
@@ -846,11 +859,24 @@ function createRepository(pool) {
           style: { id: String(selectedStyle.id), slug: selectedStyle.slug, name: selectedStyle.name, instructions: selectedStyle.instructions },
         };
         await c.execute('INSERT INTO generation_slot_claims (slot_id,claimed_at) VALUES (?,?)', [slot.id, now]);
-        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,model_config_version=?,content_category_id=?,content_style_id=?,content_strategy_json=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.version, selectedCategory.id, selectedStyle.id, JSON.stringify(strategySnapshot), slot.id]);
+        await c.execute("UPDATE slots SET status='generating',claimed_at=?,cta_url=?,openrouter_model=?,openrouter_reviewer_model=?,model_config_version=?,content_category_id=?,content_style_id=?,content_strategy_json=?,business_knowledge_snapshot_json=?,business_knowledge_snapshot_version=?,generation_settings_snapshot_json=? WHERE id=? AND status='pending'", [now, validated.settings.businessKnowledge.ctaUrl, integration.model, integration.reviewer_model, integration.version, selectedCategory.id, selectedStyle.id, JSON.stringify(strategySnapshot), JSON.stringify(validated.settings.businessKnowledge), Number(state.business_knowledge_version || 1), JSON.stringify(validated.settings), slot.id]);
       }
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, contentStrategy: strategySnapshot, categoryId: strategySnapshot.category.id, styleId: strategySnapshot.style.id, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
+      const generationSettings = slot.status === 'pending' ? validated.settings : json(slot.generation_settings_snapshot_json, validated.settings);
+      const knowledgeSnapshot = slot.status === 'pending' ? validated.settings.businessKnowledge : json(slot.business_knowledge_snapshot_json, generationSettings.businessKnowledge || validated.settings.businessKnowledge);
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status,
+        requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar,
+        factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []),
+        contentSafetyHash: slot.content_safety_hash, contentStrategy: strategySnapshot, categoryId: strategySnapshot.category.id,
+        styleId: strategySnapshot.style.id, ctaUrl: slot.status === 'pending' ? validated.settings.businessKnowledge.ctaUrl : slot.cta_url,
+        profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version,
+        model: slot.status === 'pending' ? integration.model : slot.openrouter_model,
+        reviewerModel: slot.status === 'pending' ? integration.reviewer_model : slot.openrouter_reviewer_model,
+        modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version,
+        businessKnowledge: knowledgeSnapshot,
+        businessKnowledgeVersion: slot.status === 'pending' ? Number(state.business_knowledge_version || 1) : slot.business_knowledge_snapshot_version,
+        generationSettings, reviewed: Boolean(slot.reviewed), reviewMetadata: json(slot.review_metadata_json, null) };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -860,12 +886,14 @@ function createRepository(pool) {
     try {
       await c.beginTransaction();
       const [[row]]=await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
-      const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
+      const [[integration]]=await selectQuery(c, 'SELECT version,status,profile_id,account_id,model,reviewer_model FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const settings=json(row?.settings_json);const knowledge=json(row?.business_knowledge_json,{});
       const sessionId=settings.automationSessionId;
       const savedSchedule=settings.schedule||schedule||{};
       const checked=validateNdiSettings({schedule:savedSchedule,hashtags:settings.hashtags||[],businessKnowledge:knowledge});
-      if(!row?.automation_enabled||row.business_knowledge_approved!==1&&row.business_knowledge_approved!==true||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
+      if(!row?.automation_enabled||row.business_knowledge_approved!==1&&row.business_knowledge_approved!==true||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid){await c.commit();return {slot:null,created:false,skippedCount:0};}
+      if(!hasDistinctModels(integration?.model,integration?.reviewer_model)){await c.commit();return {slot:null,created:false,skippedCount:0,blocked:'REVIEWER_MODEL_REQUIRED'};}
+      if(integration?.status!=='ACTIVE'||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
       if(await hasProviderHold(c,integration.profile_id,integration.account_id)){await c.commit();return {slot:null,created:false,skippedCount:0,held:true};}
       const scheduleChanged=JSON.stringify(settings.schedule||{})!==JSON.stringify(checked.settings.schedule);
       settings.schedule=checked.settings.schedule;
@@ -949,7 +977,7 @@ function createRepository(pool) {
       return {slot:null,created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};
     } catch(e){await c.rollback();throw e;}finally{c.release();}
   }
-  async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[],factVersions=[],contentSafetyHash=null}) {
+  async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[],factVersions=[],contentSafetyHash=null,reviewed=false,reviewMetadata=null}) {
     const c=await pool.getConnection();
     try {
       await c.beginTransaction();
@@ -959,10 +987,40 @@ function createRepository(pool) {
       const strategy = json(slot?.content_strategy_json, null);
       if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating'
         || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id) { await c.rollback(); return false; }
-      const [updated]=await mutationQuery(c, "UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),JSON.stringify(factVersions),contentSafetyHash,id,sessionId]);
+      const [updated]=await mutationQuery(c, "UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=?,fact_versions=?,content_safety_hash=?,reviewed=?,review_metadata_json=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),JSON.stringify(factVersions),contentSafetyHash,Boolean(reviewed),reviewed ? JSON.stringify(reviewMetadata || {}) : null,id,sessionId]);
       await c.commit();
       return updated.affectedRows===1;
     } catch(error) { await c.rollback(); throw error; }
+    finally { c.release(); }
+  }
+  async function saveReviewAttempts(slotId, attempts = []) {
+    if (!Array.isArray(attempts) || attempts.length > 8) throw Object.assign(new Error('INVALID_REVIEW_ATTEMPTS'), { code: 'INVALID_REVIEW_ATTEMPTS' });
+    if (!attempts.length) return;
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[slot]] = await selectQuery(c, "SELECT status FROM slots WHERE id=? FOR UPDATE", [slotId]);
+      if (!slot || slot.status !== 'generating') throw Object.assign(new Error('REVIEW_SLOT_NOT_GENERATING'), { code: 'REVIEW_SLOT_NOT_GENERATING' });
+      for (const [index, attempt] of attempts.entries()) {
+        const decision = ['PASS','REVISE','REJECT','ERROR'].includes(attempt?.decision) ? attempt.decision : 'ERROR';
+        const rationaleCode = typeof attempt?.rationaleCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(attempt.rationaleCode) ? attempt.rationaleCode : null;
+        const draft = typeof attempt?.draft === 'string' ? attempt.draft.normalize('NFKC').slice(0, 5000)
+          .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, '[email disamarkan]')
+          .replace(/\+?\d[\d ().-]{7,}\d/gu, '[nomor disamarkan]')
+          .replace(/\b(?:sk-or-v1-|sk-|Bearer\s+)[A-Za-z0-9._-]{8,}/giu, '[credential disamarkan]') : null;
+        const violations = Array.isArray(attempt?.violations) ? attempt.violations.slice(0, 30).flatMap((item) => {
+          if (!/^[A-Z0-9_]{1,64}$/.test(String(item?.code || '')) || !/^[a-z.]{1,80}$/.test(String(item?.path || ''))
+            || !['repairable_content','nonrepairable_configuration_system'].includes(item?.repairability)) return [];
+          return [{ code: item.code, path: item.path, repairability: item.repairability }];
+        }) : [];
+        await c.execute(`INSERT INTO slot_content_review_attempts
+          (slot_id,sequence_no,phase,technical_retry,decision,rationale_code,sanitized_draft,violations_json)
+          VALUES (?,?,'reviewer',?,?,?,?,?) ON DUPLICATE KEY UPDATE technical_retry=VALUES(technical_retry),decision=VALUES(decision),
+          rationale_code=VALUES(rationale_code),sanitized_draft=VALUES(sanitized_draft),violations_json=VALUES(violations_json)`,
+        [slotId, index + 1, Boolean(attempt?.technicalRetry), decision, rationaleCode, draft, JSON.stringify(violations)]);
+      }
+      await c.commit();
+    } catch (error) { await c.rollback(); throw error; }
     finally { c.release(); }
   }
   async function startPublishing(id, { now }) {
@@ -972,7 +1030,7 @@ function createRepository(pool) {
       const [[settings]] = await selectQuery(c, 'SELECT automation_enabled,settings_json,business_knowledge_json,business_knowledge_approved FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const [[integration]] = await selectQuery(c, 'SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE', [], 'query');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
+      const [[slot]] = await selectQuery(c, 'SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,cta_url,content_category_id,content_style_id,content_strategy_json,tebar_profile_id,tebar_account_id,request_payload,business_knowledge_snapshot_json,generation_settings_snapshot_json FROM slots WHERE id=? FOR UPDATE', [id]);
       const payload = json(slot?.request_payload);
       const strategy = json(slot?.content_strategy_json, null);
       if (!slot || slot.status !== 'ready' || !slot.content_category_id || !slot.content_style_id || !strategy?.category?.id || !strategy?.style?.id
@@ -984,15 +1042,19 @@ function createRepository(pool) {
         await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
         await c.commit(); return 'provider_hold';
       }
-      const [[otherInFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND id<>? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, id, now]);
+      const [[otherInFlight]] = await selectQuery(c, "SELECT id FROM slots WHERE automation_session_id=? AND id<>? AND (status IN ('generating','publishing') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, id, now]);
       if (otherInFlight) {
         await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
         await c.commit();
         return 'in_flight';
       }
-      const config = json(settings.settings_json);
-      const knowledge = json(settings.business_knowledge_json, {});
-      const ndiSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
+      const currentConfig = json(settings.settings_json);
+      const slotConfig = json(slot.generation_settings_snapshot_json, {
+        schedule: currentConfig.schedule || {}, hashtags: currentConfig.hashtags || [],
+        businessKnowledge: json(slot.business_knowledge_snapshot_json, json(settings.business_knowledge_json, {})),
+      });
+      const ndiSettings = validateNdiSettings({ schedule: slotConfig.schedule || {}, hashtags: slotConfig.hashtags || [],
+        businessKnowledge: slotConfig.businessKnowledge || json(slot.business_knowledge_snapshot_json, {}) });
       const currentHash = ndiSettings.valid ? contentSafetyHash(ndiSettings.settings) : null;
       const captionCheck = validateNdiCaption(payload?.content, {
         ctaUrl: slot.cta_url,
@@ -1009,6 +1071,8 @@ function createRepository(pool) {
         await c.rollback(); return 'stale_facts';
       }
       const [[last]] = await selectQuery(c, "SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId,id]);
+      const config = currentConfig;
+      const knowledge = json(settings.business_knowledge_json, {});
       const checkedSettings = validateNdiSettings({ schedule: config.schedule || {}, hashtags: config.hashtags || [], businessKnowledge: knowledge });
       if (!checkedSettings.valid) { await c.rollback(); return 'stale_facts'; }
       const cadenceMs = checkedSettings.settings.schedule.intervalMinutes * 60_000;
@@ -1055,6 +1119,10 @@ function createRepository(pool) {
           `UPDATE slots SET ${keys.map((key) => `${allowed[key]}=?`).join(',')} WHERE id=? AND status='publishing' AND provider_post_id IS NULL`,
           values,
         );
+        if (patch.status === 'unknown' && slot.status !== 'unknown') {
+          await lockUnknownAlerts(c);
+          await recordUnknownTransition(c, id);
+        }
         if (['published', 'failed', 'partial', 'canceled'].includes(patch.status)) await suppressPendingNotices(c, id, patch.status);
         if (providerHold) {
           const scope = providerHoldScope(providerHold);
@@ -1095,11 +1163,13 @@ function createRepository(pool) {
         WHERE status='publishing' AND provider_post_id IS NULL AND publish_started_at IS NOT NULL AND publish_started_at<=?${selectedFilter}
         ORDER BY publish_started_at LIMIT 100 FOR UPDATE SKIP LOCKED`, [cutoff, ...(selectedIds || [])]);
       const recovered = [];
+      if (rows.length) await lockUnknownAlerts(connection);
       for (const row of rows) {
         const [updated] = await mutationQuery(connection, `UPDATE slots
           SET status='unknown',provider_status='unknown',error_code='unknown_outcome',completed_at=NULL
           WHERE id=? AND status='publishing' AND provider_post_id IS NULL AND publish_started_at<=?`, [row.id, cutoff]);
         if (updated.affectedRows !== 1) continue;
+        await recordUnknownTransition(connection, row.id);
         const details = { code: 'unknown_outcome', reason: 'worker_interrupted' };
         await connection.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'publication_worker_interrupted',?)", [row.id, JSON.stringify(details)]);
         recovered.push(row.id);
@@ -1116,6 +1186,32 @@ function createRepository(pool) {
     const keys=['unknown_outcome',...(status==='published'?['provider_error','generation_failed','content_validation_failed']:[])].map(code=>createHash('sha256').update(`${code}:slot:${id}`).digest('hex'));
     for(const key of keys) await connection.execute("UPDATE notification_outbox SET status='failed',last_error_code='superseded' WHERE dedupe_key=? AND status='pending'",[key]);
   }
+  async function lockUnknownAlerts(connection) {
+    await selectQuery(connection, 'SELECT id FROM dual_ai_unknown_alert_lock WHERE id=1 FOR UPDATE', [], 'query');
+  }
+  async function recordUnknownTransition(connection, id) {
+    await connection.execute("UPDATE slots SET unknown_occurrence_count=unknown_occurrence_count+1 WHERE id=? AND status='unknown'", [id]);
+    const [[slot]] = await selectQuery(connection, 'SELECT unknown_occurrence_count,scheduled_at,publish_started_at FROM slots WHERE id=?', [id]);
+    if (!slot) return;
+    const occurrence = Number(slot.unknown_occurrence_count);
+    const [eventResult] = await connection.execute('INSERT INTO publication_unknown_events (slot_id,occurrence_no,occurred_at) VALUES (?,?,UTC_TIMESTAMP(3))', [id, occurrence]);
+    const eventId = Number(eventResult.insertId);
+    const slotKey = createHash('sha256').update(`unknown-slot:${id}:${occurrence}`).digest('hex');
+    const occurredAt = slot.publish_started_at || slot.scheduled_at;
+    const occurredAtUtc = occurredAt instanceof Date ? occurredAt.toISOString()
+      : typeof occurredAt === 'string' ? `${occurredAt.replace(' ', 'T')}Z` : 'tidak tersedia';
+    const slotNotice = `BOT NDI — STATUS PUBLIKASI BELUM PASTI\nSlot ID: ${id}\nWaktu: ${occurredAtUtc} (UTC)\nStatus belum terverifikasi. Sistem tidak akan mengirim ulang slot ini. Dashboard: https://botndi.sequein.my.id → Integrasi → Riwayat & Catatan.`;
+    await connection.execute('INSERT IGNORE INTO notification_outbox (dedupe_key,message) VALUES (?,?)', [slotKey, slotNotice]);
+    const [[rolling]] = await selectQuery(connection, 'SELECT COUNT(*) AS count FROM publication_unknown_events WHERE occurred_at>=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 24 HOUR)', []);
+    if (Number(rolling?.count || 0) < 3) return;
+    const [[recentAlert]] = await selectQuery(connection, 'SELECT id FROM publication_unknown_threshold_alerts WHERE created_at>=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 24 HOUR) LIMIT 1 FOR UPDATE', []);
+    if (recentAlert) return;
+    const thresholdKey = createHash('sha256').update(`unknown-threshold:${eventId}`).digest('hex');
+    const [alertResult] = await connection.execute('INSERT IGNORE INTO publication_unknown_threshold_alerts (threshold_event_id,dedupe_key) VALUES (?,?)', [eventId, thresholdKey]);
+    if (alertResult.affectedRows !== 1) return;
+    const thresholdNotice = 'BOT NDI — PERINGATAN PRIORITAS\nTiga atau lebih kejadian slot publikasi belum pasti tercatat dalam 24 jam terakhir (UTC). Otomasi tetap mengikuti jadwal; slot yang belum pasti tidak akan dikirim ulang. Dashboard: https://botndi.sequein.my.id → Integrasi → Riwayat & Catatan.';
+    await connection.execute('INSERT IGNORE INTO notification_outbox (dedupe_key,message) VALUES (?,?)', [thresholdKey, thresholdNotice]);
+  }
   async function updateSlot(id,patch) {
     if (patch.status === 'admin_closed_unknown') throw publicationError('PUBLICATION_RESOLUTION_REQUIRED');
     const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at',providerPublishedAt:'provider_published_at'};
@@ -1127,11 +1223,28 @@ function createRepository(pool) {
       ? " AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')" : '';
     const where=guarded?` WHERE id=? AND (status NOT IN ('published','failed','partial','canceled','skipped','admin_closed_unknown') OR status=?)${conflictGuard}`:" WHERE id=? AND status<>'admin_closed_unknown'";
     if(guarded)values.push(patch.status);
+    if (patch.status === 'unknown') {
+      const c = await pool.getConnection();
+      try {
+        await c.beginTransaction();
+        await selectQuery(c, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query');
+        const [[current]] = await selectQuery(c, 'SELECT status FROM slots WHERE id=? FOR UPDATE', [id]);
+        const [updated] = await mutationQuery(c, `UPDATE slots SET ${sql}${where}`, values);
+        if (updated.affectedRows && current?.status !== 'unknown') {
+          await lockUnknownAlerts(c);
+          await recordUnknownTransition(c, id);
+        }
+        await c.commit();
+        return updated.affectedRows > 0;
+      } catch (error) { await c.rollback(); throw error; }
+      finally { c.release(); }
+    }
     if(!['published','failed','partial','canceled'].includes(patch.status)){const [updated]=await mutationQuery(pool, `UPDATE slots SET ${sql}${where}`,values);return updated.affectedRows>0;}
     const c=await pool.getConnection();try{
       await c.beginTransaction();
+      await selectQuery(c, 'SELECT id FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       if (patch.providerPublishedAt != null) {
-        const [[current]] = await selectQuery(c, 'SELECT provider_published_at FROM slots WHERE id=? FOR UPDATE', [id]);
+        const [[current]] = await selectQuery(c, 'SELECT status,provider_published_at FROM slots WHERE id=? FOR UPDATE', [id]);
         const incoming = normalizeProviderPublishedAt(patch.providerPublishedAt);
         const currentValue = current?.provider_published_at;
         const currentTime = currentValue instanceof Date ? currentValue.getTime()
@@ -1139,6 +1252,10 @@ function createRepository(pool) {
         const incomingTime = Date.parse(`${incoming.replace(' ', 'T')}Z`);
         if (Number.isFinite(currentTime) && currentTime !== incomingTime) {
           await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status NOT IN ('admin_closed_unknown')", [id]);
+          if (current?.status !== 'unknown') {
+            await lockUnknownAlerts(c);
+            await recordUnknownTransition(c, id);
+          }
           await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)", [id, JSON.stringify({ code: 'provider_timestamp_conflict' })]);
           await c.commit();
           return false;
@@ -1149,7 +1266,12 @@ function createRepository(pool) {
       else if(patch.status==='published') {
         // A publication conflicting with an earlier terminal result is not safe
         // to discard: require another provider reconciliation before reporting it.
-        await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status IN ('failed','partial','canceled','skipped')",[id]);
+        const [[current]] = await selectQuery(c, 'SELECT status FROM slots WHERE id=? FOR UPDATE', [id]);
+        const [conflict] = await mutationQuery(c, "UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status IN ('failed','partial','canceled','skipped')",[id]);
+        if (conflict.affectedRows && current?.status !== 'unknown') {
+          await lockUnknownAlerts(c);
+          await recordUnknownTransition(c, id);
+        }
       }
       await c.commit();
       return updated.affectedRows>0;
@@ -1168,8 +1290,8 @@ function createRepository(pool) {
         OR JSON_UNQUOTE(JSON_EXTRACT(request_payload,'$.targets[0].account_id'))<>tebar_account_id
       ))
     )` : '';
-    const [rows]=await selectQuery(pool, `SELECT id,automation_session_id,provider_post_id,provider_status,request_payload,idempotency_key,status,caption,pillar,error_code,publish_started_at,scheduled_at,completed_at,tebar_profile_id,tebar_account_id FROM slots WHERE (status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) )${targetScope} ORDER BY scheduled_at`, scoped ? [profileId,accountId] : []);
-    return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,providerStatus:r.provider_status,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,errorCode:r.error_code,publishStartedAt:r.publish_started_at,scheduledAt:r.scheduled_at,completedAt:r.completed_at,profileId:r.tebar_profile_id,accountId:r.tebar_account_id}));
+    const [rows]=await selectQuery(pool, `SELECT id,automation_session_id,provider_post_id,provider_status,request_payload,idempotency_key,status,caption,pillar,error_code,publish_started_at,scheduled_at,completed_at,tebar_profile_id,tebar_account_id,unknown_occurrence_count FROM slots WHERE (status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) )${targetScope} ORDER BY scheduled_at`, scoped ? [profileId,accountId] : []);
+    return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,providerStatus:r.provider_status,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,errorCode:r.error_code,publishStartedAt:r.publish_started_at,scheduledAt:r.scheduled_at,completedAt:r.completed_at,profileId:r.tebar_profile_id,accountId:r.tebar_account_id,unknownOccurrenceCount:Number(r.unknown_occurrence_count||0)}));
   }
   /** @param {string} providerPostId @param {{status: string, errorCode?: string | null}} options */
   async function recordCancellation(providerPostId,{status,errorCode}) {
@@ -1372,7 +1494,7 @@ function createRepository(pool) {
       await c.beginTransaction();
       try { await c.execute('INSERT INTO webhook_events (event_id,payload_hash) VALUES (?,?)',[eventId,payloadHash]); }
       catch(e) { if(e.code==='ER_DUP_ENTRY'){await c.rollback();return false;} throw e; }
-      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,business_knowledge_json,automation_enabled FROM settings WHERE id=1', [], 'query');
+      const [[settingsRow]]=await selectQuery(c, 'SELECT settings_json,business_knowledge_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE', [], 'query');
       const configured=json(settingsRow?.settings_json);
       const knowledge=json(settingsRow?.business_knowledge_json,{});
       const eventType=String(type||'');
@@ -1415,6 +1537,10 @@ function createRepository(pool) {
         staleTerminalCancellation=slotIsTerminal&&providerStatus==='canceled';
         if(conflictingPublication || conflictingProviderTime) {
           await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=?",[slot.id]);
+          if (slot.status !== 'unknown') {
+            await lockUnknownAlerts(c);
+            await recordUnknownTransition(c, slot.id);
+          }
           await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:conflictingProviderTime?'provider_timestamp_conflict':'unknown_outcome'})]);
         } else if(!delayedNonterminal&&!staleTerminalCancellation) {
           const activeSession=Boolean(settingsRow?.automation_enabled)&&slot?.automation_session_id===configured.automationSessionId;
@@ -1423,6 +1549,10 @@ function createRepository(pool) {
           const final=['published','failed','partial','canceled'].includes(slotStatus);
           const completedAt=providerStatus==='published'?webhookPublishedAt:null;
           await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at),provider_published_at=IF(? IS NOT NULL,COALESCE(provider_published_at,?),provider_published_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,providerStatus==='published'?webhookPublishedAt:null,providerStatus==='published'?webhookPublishedAt:null,postId]);
+          if (slotStatus === 'unknown' && slot.status !== 'unknown') {
+            await lockUnknownAlerts(c);
+            await recordUnknownTransition(c, slot.id);
+          }
           if(slot && final) await suppressPendingNotices(c,slot.id,slotStatus);
         }
       }
@@ -1474,7 +1604,7 @@ function createRepository(pool) {
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await selectQuery(pool, 'SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {}),...(status==='published'&&(details.providerPublishedAt||details.publishedAt)?{providerPublishedAt:details.providerPublishedAt||details.publishedAt}:{})});return true; }
-  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,getWebsiteSyncState,startWebsiteSyncRun,completeWebsiteSyncRun,failWebsiteSyncRun,reviewWebsiteKnowledgeProposal,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { listPublicationBlockers,listClosedUnknownSlots,getPublicationSlot,getPublicationResolutionByRequest,listPublicationResolutionEvents,closeUnknownPublication,linkVerifiedProviderPost,recordProviderHold,listActiveProviderHolds,clearProviderHold,healthCheck,getSettings,getRuntimeState,getContentStrategyState,getWebsiteSyncState,startWebsiteSyncRun,completeWebsiteSyncRun,failWebsiteSyncRun,reviewWebsiteKnowledgeProposal,saveContentStrategyRecord,setContentStrategyRecordActive,archiveContentStrategyRecord,setContentStrategyEnabled,saveCategoryProposalSettings,claimCategoryProposalRun,finishCategoryProposalRun,reviewCategoryProposal,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,saveReviewAttempts,startPublishing,withPublicationFence,isAutomationSessionActive,recoverStalePublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

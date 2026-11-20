@@ -358,6 +358,7 @@ body.nav-open{overflow:hidden}
   font-size:14px;
 }
 #login-view .login-submit:hover{background:#1b46b7}
+#app-view .dashboard-main .status-label.reviewed{margin-left:4px;border-color:#c7d2fe;background:#eef2ff;color:#3730a3!important}
 #login-view .login-submit:active{background:#173eaa;transform:translateY(1px)}
 #login-view .login-submit:disabled{background:#657eb8;color:#fff!important;opacity:1;cursor:wait}
 #login-view #login-error{margin-top:8px;border:1px solid #ce8b98;background:#fff0f2;color:#7a1830!important}

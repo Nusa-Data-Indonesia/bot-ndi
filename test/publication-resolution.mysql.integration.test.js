@@ -5,6 +5,27 @@ const { randomUUID, createHash } = require('node:crypto');
 const enabled = process.env.NODE_ENV === 'test' && process.env.DB_NAME === 'bot_ndi_test'
   && ['localhost', '127.0.0.1', '::1'].includes(process.env.DB_HOST) && process.env.ALLOW_DESTRUCTIVE_DB_TESTS === 'true';
 
+async function deleteDualAiSlotRecords(pool, slotIds) {
+  if (!slotIds.length) return;
+  const placeholders = slotIds.map(() => '?').join(',');
+  const [events] = await pool.execute(`SELECT id,slot_id,occurrence_no FROM publication_unknown_events WHERE slot_id IN (${placeholders})`, slotIds);
+  if (events.length) {
+    const eventIds = events.map(event => event.id);
+    const eventPlaceholders = eventIds.map(() => '?').join(',');
+    const [alerts] = await pool.execute(`SELECT id,dedupe_key FROM publication_unknown_threshold_alerts WHERE threshold_event_id IN (${eventPlaceholders})`, eventIds);
+    const outboxKeys = [
+      ...events.map(event => createHash('sha256').update(`unknown-slot:${event.slot_id}:${event.occurrence_no}`).digest('hex')),
+      ...alerts.map(alert => alert.dedupe_key),
+    ];
+    if (outboxKeys.length) {
+      await pool.execute(`DELETE FROM notification_outbox WHERE dedupe_key IN (${outboxKeys.map(() => '?').join(',')})`, outboxKeys);
+    }
+    await pool.execute(`DELETE FROM publication_unknown_threshold_alerts WHERE threshold_event_id IN (${eventPlaceholders})`, eventIds);
+    await pool.execute(`DELETE FROM publication_unknown_events WHERE id IN (${eventPlaceholders})`, eventIds);
+  }
+  await pool.execute(`DELETE FROM slot_content_review_attempts WHERE slot_id IN (${placeholders})`, slotIds);
+}
+
 test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, and account switch recovery', { skip: !enabled }, async t => {
   const { createPool } = require('../src/db');
   const { loadEnv } = require('../src/config');
@@ -213,7 +234,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       const version = Number(max.version) + 10;
       const settings = { profileId, targetAccountId: accountId, integrationConfigInitialized: true, onboardingComplete: true };
       await pool.execute('UPDATE settings SET settings_json=?,automation_enabled=FALSE WHERE id=1', [JSON.stringify(settings)]);
-      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL", [version, profileId, accountId]);
+      await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,reviewer_model,status) VALUES (1,?,?,?,'test/generator','test/reviewer','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),reviewer_model=VALUES(reviewer_model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL,pending_reviewer_model=NULL", [version, profileId, accountId]);
       const first = await slot(); const second = await slot();
       assert.deepEqual((await repo.listUnsettledSlots({ profileId, accountId })).map(item => item.id).sort(), [first, second].sort(), 'only this account-switch fixture may block the switch');
       const configuration = createConfigurationService({ pool, config: { tebar: { profileId, accountId }, openRouter: { model: 'test/model' } } });
@@ -305,6 +326,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       for (const version of switchVersions) await pool.execute('DELETE FROM integration_config_history WHERE version=?', [version]);
       await pool.execute('DELETE FROM admins WHERE id=?', [actorId]);
     }
+    await deleteDualAiSlotRecords(pool, created);
     for (const id of created) {
       await pool.execute('DELETE FROM activity_logs WHERE slot_id=?', [id]);
       await pool.execute('DELETE FROM generation_learning_snapshots WHERE slot_id=?', [id]);
@@ -313,7 +335,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       await pool.execute('DELETE FROM slots WHERE id=?', [id]);
     }
     if (savedSettings) await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,business_knowledge_json=?,business_knowledge_approved=?,automation_enabled=? WHERE id=1', [typeof savedSettings.settings_json === 'string' ? savedSettings.settings_json : JSON.stringify(savedSettings.settings_json), typeof savedSettings.knowledge_json === 'string' ? savedSettings.knowledge_json : JSON.stringify(savedSettings.knowledge_json), typeof savedSettings.business_knowledge_json === 'string' ? savedSettings.business_knowledge_json : JSON.stringify(savedSettings.business_knowledge_json), savedSettings.business_knowledge_approved, savedSettings.automation_enabled]);
-    if (savedConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1', [savedConfig.version,savedConfig.profile_id,savedConfig.account_id,savedConfig.model,savedConfig.status,savedConfig.pending_profile_id,savedConfig.pending_account_id,savedConfig.pending_model,savedConfig.updated_by]);
+    if (savedConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,reviewer_model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,pending_reviewer_model=?,updated_by=? WHERE id=1', [savedConfig.version,savedConfig.profile_id,savedConfig.account_id,savedConfig.model,savedConfig.reviewer_model,savedConfig.status,savedConfig.pending_profile_id,savedConfig.pending_account_id,savedConfig.pending_model,savedConfig.pending_reviewer_model,savedConfig.updated_by]);
     else if (savedSettings) await pool.execute('DELETE FROM integration_config WHERE id=1');
     if (savedStrategy) await pool.execute('UPDATE content_strategy_settings SET enabled=?,enabled_by=?,enabled_at=? WHERE id=1', [savedStrategy.enabled,savedStrategy.enabled_by,savedStrategy.enabled_at]);
     await pool.end();

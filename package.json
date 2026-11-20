@@ -11,9 +11,9 @@
     "migrate": "node src/cli.js migrate",
     "admin:create": "node src/cli.js admin:create",
     "dispatch": "node src/cli.js dispatch",
-    "test": "node --test --test-concurrency=1 test/*.test.js",
-    "test:integration": "node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js && node --test test/configuration.mysql.js",
-    "test:ndi:browser": "node --test e2e/ndi.browser.e2e.js",
+    "test": "NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test --test-concurrency=1 test/*.test.js",
+    "test:integration": "export NODE_OPTIONS=--require=./test/deny-external-network.cjs; node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js && node --test test/configuration.mysql.js",
+    "test:ndi:browser": "NODE_OPTIONS=--require=./test/deny-external-network.cjs node --test e2e/ndi.browser.e2e.js",
     "lint": "eslint src scripts public",
     "typecheck": "tsc --project tsconfig.typecheck.json",
     "check": "node scripts/check.js"

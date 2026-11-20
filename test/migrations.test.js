@@ -109,6 +109,27 @@ test("template migration stores shared structured templates with admin audit ref
   assert.match(sql,/FOREIGN KEY \(created_by\) REFERENCES admins\(id\)/);
 });
 
+test('Dual AI migration is additive, idempotent, and preserves existing configuration and unknown slots', async () => {
+  const sql = await fs.readFile(require.resolve('../migrations/024_dual_ai_and_unknown_continuation.sql'), 'utf8');
+  assert.doesNotMatch(sql, /\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i);
+  for (const column of [
+    'reviewer_model', 'pending_reviewer_model', 'openrouter_reviewer_model',
+    'business_knowledge_snapshot_json', 'business_knowledge_snapshot_version',
+    'generation_settings_snapshot_json', 'reviewed', 'review_metadata_json', 'unknown_occurrence_count',
+  ]) {
+    assert.match(sql, new RegExp(`ADD COLUMN ${column}\\b`));
+    assert.match(sql, new RegExp(`column_name='${column}'`));
+  }
+  for (const table of ['slot_content_review_attempts', 'dual_ai_unknown_alert_lock', 'publication_unknown_events', 'publication_unknown_threshold_alerts']) {
+    assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`));
+  }
+  assert.match(sql, /INSERT IGNORE INTO dual_ai_unknown_alert_lock/);
+  assert.match(sql, /INSERT IGNORE INTO publication_unknown_events/);
+  assert.match(sql, /FROM slots WHERE status='unknown'/);
+  assert.match(sql, /UPDATE slots SET unknown_occurrence_count=1\s+WHERE status='unknown' AND unknown_occurrence_count=0/);
+  assert.doesNotMatch(sql, /UPDATE integration_config\s+SET\s+(?:model|profile_id|account_id)\s*=/i);
+});
+
 test("failed lock cleanup discards the connection instead of returning a held lock to the pool", async () => {
   const pool = fakePool({ unlockFails: true });
   await require("../src/migrate").runMigrations(pool);

@@ -62,7 +62,7 @@
         delete form.dataset.pending;
         if (originalBusy === null) form.removeAttribute('aria-busy');
         else form.setAttribute('aria-busy', originalBusy);
-        if (form.id === 'integration-account-form' || form.id === 'integration-model-form') syncIntegrationControls();
+        if (['integration-account-form', 'integration-model-form', 'reviewer-model-form'].includes(form.id)) syncIntegrationControls();
       }
     }
   }
@@ -73,7 +73,7 @@
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
+  const state = { csrf: '', data: null, integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, reviewerModelValidation: null, reviewerModelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
   const escapeText = (value) => String(value ?? '');
   const toastTimers = new WeakMap();
   const toastHistory = new Map();
@@ -106,7 +106,7 @@
       const partialSuccess = /ringkasan dashboard belum dapat diperbarui/i.test(text);
       notify(partialSuccess ? 'info' : /konflik|validasi|belum selesai|belum lengkap|periksa/i.test(text) ? 'warning' : 'error', partialSuccess ? `Perubahan berhasil disimpan, tetapi ${text.charAt(0).toLowerCase()}${text.slice(1)}` : text);
     }
-    else if (selector === '#integration-account-error' || selector === '#integration-model-error') notify('error', text);
+    else if (selector === '#integration-account-error' || selector === '#integration-model-error' || selector === '#reviewer-model-error') notify('error', text);
   };
   function confirmAction(message) {
     const confirmed = window.confirm(message);
@@ -160,6 +160,8 @@
     INVALID_ACCOUNT: 'Profile ID atau Account ID tidak valid. Periksa kedua isian.',
     INVALID_MODEL: 'Model ID tidak valid. Periksa kembali format dan nama model.',
     MODEL_INCOMPATIBLE: 'Model tidak mendukung kebutuhan teks atau parameter aplikasi.',
+    MODEL_IDS_MUST_DIFFER: 'Model Generator dan Reviewer harus berbeda.',
+    REVIEWER_MODEL_REQUIRED: 'Pilih dan verifikasi model Reviewer yang berbeda dari Generator sebelum otomasi dijalankan.',
     MODEL_METADATA_UNVERIFIED: 'Metadata model belum cukup untuk memastikan kompatibilitas. Model aktif tidak berubah.',
     PROVIDER_UNAVAILABLE: 'Penyedia belum dapat dihubungi. Coba lagi setelah koneksi pulih.',
     SWITCH_BLOCKED: 'Pergantian tertahan karena status posting lama belum pasti. Periksa dan lanjutkan rekonsiliasi.',
@@ -654,10 +656,11 @@
         ? `${post.contentStrategy.category.name}${post.contentStrategy.style?.name ? ` · ${post.contentStrategy.style.name}` : ''}`
         : post.pillar === 'ndi' ? 'Konten NDI' : post.pillar ? 'Riwayat lama' : '—';
       const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = statusLabels[post.status] || 'Belum diketahui'; statusCell.append(badge);
+      if (post.reviewed === true) { const reviewed = document.createElement('span'); reviewed.className = 'status-label reviewed'; reviewed.textContent = 'Reviewed'; reviewed.setAttribute('aria-label', 'Caption berhasil diperbaiki oleh AI Reviewer'); statusCell.append(document.createTextNode(' '), reviewed); }
       const caption = document.createElement('td'); caption.textContent = post.caption || post.errorCode || '—';
       tr.append(time, pillar, statusCell, caption); return tr;
     });
-    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 5; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
+    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
     body.replaceChildren(...rows);
   }
 
@@ -876,9 +879,10 @@
       ['Waktu percobaan', publicationDate(slot.publishStartedAt)], ['Waktu terjadwal', publicationDate(slot.scheduledAt)],
       ['Status slot', statusLabels[slot.status] || slot.status], ['Status Tebar', slot.providerStatus],
       ['Kode error', slot.errorCode], ['ID post Tebar', slot.providerPostId],
+      ...(slot.status === 'unknown' ? [['Kejadian status belum pasti', slot.unknownOccurrenceCount ?? '—']] : []),
     ]) {
       const field = publicationNode('div');
-      field.append(publicationNode('dt', label), publicationNode('dd', value || '—'));
+      field.append(publicationNode('dt', label), publicationNode('dd', value === 0 ? '0' : value || '—'));
       fields.append(field);
     }
     card.append(title, fields, publicationNode('p', slot.caption || 'Caption tidak tersedia.', 'publication-text'));
@@ -1174,7 +1178,48 @@
     const validation = state.modelValidation;
     const current = state.integrations?.configuration || {};
     $('#integration-model-form button[type="submit"]').disabled = !loaded || pending || !model
-      || validation?.model !== model || validation?.version !== current.version || validation?.status !== 'AVAILABLE' || model === current.model;
+      || validation?.model !== model || validation?.version !== current.version || validation?.status !== 'AVAILABLE'
+      || model === current.model || model === current.reviewerModel;
+    updateReviewerModelActions();
+  }
+  function renderReviewerModelOptions() {
+    const select = $('#reviewer-model-select');
+    if (!select) return;
+    const current = state.integrations?.configuration || {};
+    const desired = state.reviewerModelDraftDirty ? select.value : current.reviewerModel || '';
+    const models = new Map((state.modelCatalog || []).filter((model) => typeof model?.id === 'string')
+      .map((model) => [model.id, model]));
+    if (current.reviewerModel && !models.has(current.reviewerModel)) {
+      models.set(current.reviewerModel, { id: current.reviewerModel, name: current.reviewerModel, status: 'UNVERIFIED' });
+    }
+    select.replaceChildren();
+    const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = 'Pilih model Reviewer'; select.append(placeholder);
+    for (const model of models.values()) {
+      const option = document.createElement('option'); option.value = model.id;
+      option.textContent = `${model.name || model.id} · ${model.id}${model.status ? ` · ${model.status}` : ''}`;
+      option.disabled = model.id === current.model;
+      select.append(option);
+    }
+    if ([...select.options].some((option) => option.value === desired)) select.value = desired;
+    updateReviewerModelActions();
+  }
+  function renderReviewerModelValidation(status, message, kind = 'info') {
+    const feedback = $('#reviewer-model-validation');
+    feedback.className = `notice ${kind} full`;
+    feedback.textContent = `${status ? `${status} · ` : ''}${message}`;
+    feedback.dataset.validationStatus = status || 'UNVERIFIED';
+  }
+  function updateReviewerModelActions() {
+    const form = $('#reviewer-model-form');
+    if (!form) return;
+    const current = state.integrations?.configuration || {};
+    const model = form.elements.model.value;
+    const pending = form.dataset.pending === 'true';
+    const validation = state.reviewerModelValidation;
+    $('#reviewer-model-verify').disabled = !state.integrations || pending || !model || model === current.model;
+    $('button[type="submit"]', form).disabled = !state.integrations || pending || !model || model === current.model
+      || model === current.reviewerModel || validation?.model !== model || validation?.version !== current.version
+      || validation?.status !== 'AVAILABLE';
   }
   function setModelSelection(model) {
     const selected = { id: model.id, name: model.name || model.id, provider: model.provider || model.id.split('/')[0], status: model.status || 'UNVERIFIED', reason: model.reason || null };
@@ -1274,12 +1319,17 @@
       const actor = item.actorEmail || item.actorId || 'sistem';
       details.textContent = component === 'account'
         ? `${dateText} · Admin ${actor} · ${item.status || '—'} · Profile ${item.profileId || '—'} · Akun ${item.accountId || '—'}`
-        : `${dateText} · Admin ${actor} · ${item.status || '—'} · Model ${item.model || '—'}`;
+        : component === 'reviewer_model'
+          ? `${dateText} · Admin ${actor} · ${item.status || '—'} · Model Reviewer ${item.reviewerModel || '—'}`
+          : `${dateText} · Admin ${actor} · ${item.status || '—'} · Model Generator ${item.model || '—'}`;
       const actions = document.createElement('div'); actions.className = 'form-actions';
       const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet';
-      button.textContent = component === 'account' ? 'Pulihkan akun' : 'Pulihkan model';
+      button.textContent = component === 'account' ? 'Pulihkan akun' : component === 'reviewer_model' ? 'Pulihkan Reviewer' : 'Pulihkan Generator';
       const restorable = ['ACTIVE', 'NOT_CONFIGURED'].includes(item.status);
-      button.disabled = !restorable || (component === 'account' ? !item.profileId || !item.accountId : !item.model);
+      const currentConfig = state.integrations?.configuration || {};
+      const modelToRestore = component === 'reviewer_model' ? item.reviewerModel : item.model;
+      button.disabled = !restorable || (component === 'account' ? !item.profileId || !item.accountId
+        : !modelToRestore || modelToRestore === (component === 'reviewer_model' ? currentConfig.model : currentConfig.reviewerModel));
       if (!restorable) button.title = 'Versi yang masih menunggu rekonsiliasi tidak dapat dipulihkan.';
       button.addEventListener('click', async () => {
           hide('#global-error'); hide('#global-success');
@@ -1292,13 +1342,16 @@
                 const checked = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify({ profileId: item.profileId, accountId: item.accountId }) });
                 const accountName = checked.account?.username ? `@${checked.account.username} (${item.accountId})` : item.accountId;
                 summary = `Pulihkan akun ke ${accountName}? Model tetap ${current.model || 'belum dikonfigurasi'}. Otomasi akan dijeda dan post lama diperiksa.`;
+              } else if (component === 'reviewer_model') {
+                await api('/api/integrations/validate-reviewer-model', { method: 'POST', body: JSON.stringify({ model: item.reviewerModel }) });
+                summary = `Pulihkan model Reviewer ke ${item.reviewerModel}? Model Generator tetap ${current.model || 'belum dikonfigurasi'}.`;
               } else {
                 await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model: item.model }) });
-                summary = `Pulihkan model ke ${item.model}? Akun tetap ${current.accountId || 'belum dikonfigurasi'}.`;
+                summary = `Pulihkan model Generator ke ${item.model}? Model Reviewer tetap ${current.reviewerModel || 'belum dikonfigurasi'}.`;
               }
               if (!confirmAction(`${summary} Versi referensi: ${item.version}.`)) return;
               const result = await api('/api/integrations/rollback', { method: 'POST', body: JSON.stringify({ version: item.version, expectedVersion, confirmed: true, component }) });
-              await finishIntegrationMutation(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.', true);
+              await finishIntegrationMutation(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : component === 'reviewer_model' ? 'Model Reviewer berhasil dipulihkan.' : 'Model Generator berhasil dipulihkan.', true);
             }, 'Memeriksa…');
           } catch (error) { show('#global-error', integrationError(error)); }
       });
@@ -1310,6 +1363,7 @@
     const accountForm = $('#integration-account-form');
     $('button[type="submit"]', accountForm).disabled = !state.integrations || accountForm.dataset.pending === 'true';
     updateOpenRouterActions();
+    updateReviewerModelActions();
   }
   async function loadIntegrations({ verification = null } = {}) {
     const request = state.integrationLoad = (state.integrationLoad || 0) + 1;
@@ -1319,13 +1373,14 @@
     syncIntegrationControls();
     renderProviderHolds();
     hide('#integration-account-preview');
-    for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia';
+    for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model', '#ai-active-reviewer-model']) $(selector).textContent = 'Tidak tersedia';
     $('#integration-check-active').disabled = true;
     $('#integration-reconcile').hidden = true;
     $('#integration-notice').textContent = 'Memuat konfigurasi terkini. Isian perubahan tetap disimpan.';
     $('#ai-notice').textContent = 'Memuat model aktif dari konfigurasi server.';
     renderIntegrationHistory([], 'account');
     renderIntegrationHistory([], 'model');
+    renderIntegrationHistory([], 'reviewer_model');
     let result;
     try {
       result = await api('/api/integrations');
@@ -1343,6 +1398,10 @@
       state.modelValidation = null;
       renderModelValidation('UNVERIFIED', 'Konfigurasi berubah. Verifikasi model kembali sebelum menyimpan.');
     }
+    if (state.reviewerModelValidation && state.reviewerModelValidation.version !== configuration.version) {
+      state.reviewerModelValidation = null;
+      renderReviewerModelValidation('UNVERIFIED', 'Konfigurasi berubah. Verifikasi model Reviewer kembali sebelum menyimpan.');
+    }
     syncIntegrationControls();
     state.integrationVerification = verification;
     $('#integration-active-profile').textContent = configuration.profileId || 'Belum dikonfigurasi';
@@ -1355,6 +1414,15 @@
     $('#ai-active-model-status').textContent = configuration.model
       ? 'Tersimpan aktif di MySQL. Ketersediaan provider tidak diuji saat halaman dimuat.'
       : 'Belum ada model aktif.';
+    $('#ai-active-reviewer-model').textContent = configuration.reviewerModel || 'Belum dikonfigurasi';
+    $('#ai-active-reviewer-model-status').textContent = configuration.reviewerModel
+      ? 'Tersimpan aktif di MySQL. Ketersediaan provider tidak diuji saat halaman dimuat.'
+      : 'Reviewer wajib diisi sebelum otomasi dapat berjalan.';
+    const modelsReady = configuration.modelsReady === true && configuration.model !== configuration.reviewerModel;
+    $('#ai-dual-model-status').className = `notice ${modelsReady ? 'success' : 'warning'}`;
+    $('#ai-dual-model-status').textContent = modelsReady
+      ? 'Generator dan Reviewer menggunakan model OpenRouter yang berbeda.'
+      : 'Dual AI belum siap. Pilih dan verifikasi model Reviewer yang berbeda dari Generator.';
     const status = String(configuration.status || 'NOT_CONFIGURED').toUpperCase();
     const labels = { ACTIVE: 'Aktif', PAUSED: 'Dijeda', SWITCHING: 'Pergantian berlangsung', BLOCKED_RECONCILIATION: 'Tertahan: post lama perlu diperiksa', NOT_CONFIGURED: 'Belum dikonfigurasi' };
     $('#integration-switch-status').textContent = labels[status] || status;
@@ -1381,10 +1449,21 @@
       renderModelValidation('UNVERIFIED', activeModel ? 'Verifikasi ulang model aktif jika ingin menyimpannya sebagai perubahan.' : 'Pilih model, lalu verifikasi sebelum menyimpan.');
     }
     modelForm.dataset.baseline = activeModel;
+    const reviewerForm = $('#reviewer-model-form');
+    renderReviewerModelOptions();
+    if (!state.reviewerModelDraftDirty) {
+      state.reviewerModelValidation = null;
+      reviewerForm.elements.model.value = configuration.reviewerModel || '';
+      renderReviewerModelValidation('UNVERIFIED', configuration.reviewerModel
+        ? 'Model Reviewer tersimpan aktif di MySQL; verifikasi model baru sebelum menyimpan.'
+        : 'Pilih model Reviewer, verifikasi, lalu simpan sebelum mengaktifkan otomasi.');
+    }
+    reviewerForm.dataset.baseline = configuration.reviewerModel || '';
     updateOpenRouterActions();
     const history = Array.isArray(result.history) ? result.history : [];
     renderIntegrationHistory(history, 'account');
     renderIntegrationHistory(history, 'model');
+    renderIntegrationHistory(history, 'reviewer_model');
     await publications;
     return request === state.integrationLoad;
   }
@@ -1459,6 +1538,72 @@
       showFormError(form, error, '#integration-model-error');
     }
   });
+  $('#reviewer-model-select').addEventListener('change', (event) => {
+    state.reviewerModelDraftDirty = true;
+    state.reviewerModelValidation = null;
+    const model = event.currentTarget.value;
+    renderReviewerModelValidation('UNVERIFIED', model
+      ? 'Verifikasi model Reviewer ini sebelum menyimpan. Model harus berbeda dari Generator.'
+      : 'Pilih model Reviewer sebelum verifikasi.');
+    updateReviewerModelActions();
+  });
+  $('#reviewer-model-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    hide('#global-error'); hide('#global-success'); hide('#reviewer-model-error'); clearFormErrors(form);
+    const model = form.elements.model.value.trim();
+    const current = state.integrations?.configuration || {};
+    const expectedVersion = current.version;
+    if (!model || model === current.model || state.reviewerModelValidation?.model !== model
+      || state.reviewerModelValidation?.version !== expectedVersion || state.reviewerModelValidation?.status !== 'AVAILABLE') {
+      renderReviewerModelValidation('UNVERIFIED', 'Pilih model yang berbeda dari Generator dan verifikasi ulang sebelum menyimpan.', 'warning');
+      updateReviewerModelActions(); return;
+    }
+    let activationAttempted = false;
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        const checked = await api('/api/integrations/validate-reviewer-model', { method: 'POST', body: JSON.stringify({ model }) });
+        const identity = checked.model?.name || checked.model?.id || model;
+        if (!confirmAction(`Gunakan ${identity} (${model}) sebagai Reviewer? Reviewer hanya dipanggil ketika validasi konten menemukan kegagalan yang dapat diperbaiki.`)) return;
+        activationAttempted = true;
+        const result = await api('/api/integrations/reviewer-model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
+        state.reviewerModelDraftDirty = false; state.reviewerModelValidation = null;
+        await finishIntegrationMutation(result.configuration, 'Model Reviewer berhasil diperbarui.');
+      }, 'Memeriksa…', form);
+    } catch (error) {
+      if (activationAttempted) {
+        await loadIntegrations().catch(() => {});
+      }
+      if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE', 'MODEL_IDS_MUST_DIFFER'].includes(error.code)) {
+        renderReviewerModelValidation(modelValidationStatusFromError(error), errorText(error), 'warning');
+      }
+      showFormError(form, error, '#reviewer-model-error');
+    }
+  });
+  $('#reviewer-model-verify').addEventListener('click', async (event) => {
+    const form = $('#reviewer-model-form'); const model = form.elements.model.value.trim();
+    const current = state.integrations?.configuration || {};
+    if (!model) { renderReviewerModelValidation('UNVERIFIED', 'Pilih model Reviewer dari katalog terlebih dahulu.', 'warning'); return; }
+    if (model === current.model) {
+      renderReviewerModelValidation('INCOMPATIBLE', 'Model Reviewer harus berbeda dari model Generator.', 'warning');
+      return;
+    }
+    hide('#reviewer-model-error');
+    try {
+      await withPending(event.currentTarget, async () => {
+        const version = integrationVersion();
+        renderReviewerModelValidation('UNVERIFIED', 'Memeriksa metadata model melalui backend…');
+        const result = await api('/api/integrations/validate-reviewer-model', { method: 'POST', body: JSON.stringify({ model }) });
+        state.reviewerModelValidation = { model, version, status: 'AVAILABLE' };
+        renderReviewerModelValidation('AVAILABLE', `Model ${result.model?.name || model} kompatibel berdasarkan metadata OpenRouter.`, 'success');
+        notify('success', 'Model Reviewer tersedia dan berbeda dari Generator. Ini belum menguji request generasi.');
+      }, 'Memverifikasi…', form);
+    } catch (error) {
+      state.reviewerModelValidation = null;
+      renderReviewerModelValidation(modelValidationStatusFromError(error), errorText(error), 'warning');
+      showFormError(form, error, '#reviewer-model-error');
+    }
+  });
   $('#integration-model-catalog').addEventListener('click', async (event) => {
     try {
       await withPending(event.currentTarget, async () => {
@@ -1474,6 +1619,7 @@
           ? `Katalog dimuat: ${state.modelCatalog.length} model. ${available} kompatibel berdasarkan metadata; status bukan jaminan request generasi.`
           : 'Katalog OpenRouter tidak berisi model. Coba muat ulang nanti.';
         renderModelOptions($('#integration-model-search').value);
+        renderReviewerModelOptions();
       }, 'Memuat…', null);
     } catch (error) {
       state.modelCatalog = null; closeModelOptions();
@@ -1575,7 +1721,7 @@
         renderPublicationResolution();
         $('#publication-blocker-count').textContent = 'Muat konfigurasi untuk melihat slot yang perlu diperiksa.';
         renderProviderHolds();
-        state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false);
+        state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.reviewerModelValidation = null; state.reviewerModelDraftDirty = false; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model', '#ai-active-reviewer-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); renderIntegrationHistory([], 'reviewer_model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); $('#reviewer-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; delete $('#reviewer-model-form').dataset.baseline; setAuthenticated(false);
       }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');

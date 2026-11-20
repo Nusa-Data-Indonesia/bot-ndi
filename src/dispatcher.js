@@ -6,6 +6,7 @@ const { isInActiveWindow } = require('./policy');
 const { contentSafetyHash } = require('./content-safety');
 const { validateNdiCaption } = require('./content-validation');
 const { formatSlotNotice, formatDailyReport } = require('./telegram-format');
+const { hasDistinctModels } = require('./configuration');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 
 /** @typedef {ReturnType<typeof import('./repository').createRepository>} Repository */
@@ -15,10 +16,10 @@ const DAILY_SUMMARY_TIMEZONE = 'Asia/Jakarta';
 /** @typedef {{info?: (event: string, details?: Record<string, unknown>) => void, warn?: (event: string, details?: Record<string, unknown>) => void}} Logger */
 /** @typedef {{claimed: number, published: number, skipped: number, failed: number, unknown: number, reconciled: number, providerHeld: number, summarySent: boolean}} DispatchCounts */
 /** @typedef {Pick<DispatchCounts, 'published' | 'failed' | 'unknown'>} ReconcileCounts */
-/** @typedef {{status: string, text?: string, reason?: string, diagnosticCode?: string, attempts?: number, pillar?: string, factBearing?: boolean, factIds?: string[], factVersions?: Array<{id: string, updatedAt?: string | null}>, providerFailure?: {provider: string, code?: string, httpStatus?: number | null, transportCode?: string | null, timedOut?: boolean}}} GeneratedContent */
+/** @typedef {{status: string, text?: string, reason?: string, diagnosticCode?: string, attempts?: number, pillar?: string, factBearing?: boolean, factIds?: string[], factVersions?: Array<{id: string, updatedAt?: string | null}>, reviewed?: boolean, reviewMetadata?: Record<string, unknown>, reviewAttempts?: Array<Record<string, unknown>>, providerFailure?: {provider: string, code?: string, httpStatus?: number | null, transportCode?: string | null, timedOut?: boolean}}} GeneratedContent */
 /** @typedef {{kind: string, post?: ProviderPost, status?: string, patch?: {status?: string, providerStatus?: string, providerPostId?: string | null, errorCode?: string | null, completedAt?: Date | string | null}, [key: string]: unknown}} PublicationCallbackOutcome */
 /** @typedef {{repository: Repository, publisher?: Publisher | null, publisherForProfile?: (profileId: string) => Promise<Publisher>, notifier?: Notifier | null, counts?: ReconcileCounts, logger?: Logger, slotIds?: string[], profileId?: string | null, accountId?: string | null, correlationId?: string, clock?: () => Date}} ReconcileOptions */
-/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, maxPublishAttempts?: number}} RunDispatcherOptions */
+/** @typedef {ReconcileOptions & {content?: (input: Record<string, unknown>, options?: {generate?: (...args: unknown[]) => Promise<unknown>, review?: (...args: unknown[]) => Promise<unknown>}) => Promise<GeneratedContent>, contentGenerator?: (...args: unknown[]) => Promise<unknown>, generatorForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, reviewerForModel?: (model: string) => Promise<(...args: unknown[]) => Promise<unknown>>, timezone?: string, maxPublishAttempts?: number}} RunDispatcherOptions */
 /** @typedef {{repository: Repository, publisherForProfile?: (profileId: string) => Promise<Publisher>, profileId?: string, accountId?: string, notifier?: Notifier | null, logger?: Logger, clock?: () => Date}} ReconcileSwitchOptions */
 /** @typedef {{repository: Repository, publisher: Publisher, notifier?: Notifier | null, profileId?: string, accountId?: string, adminId?: string | number | null}} PauseAutomationOptions */
 
@@ -31,7 +32,7 @@ const SAFE_ERROR_CODES = new Set([
 ]);
 const SAFE_DIAGNOSTIC_CODES = new Set([
   'invalid_settings', 'approved_content_invalid', 'onboarding_incomplete', 'content_validation_failed',
-  'tebar_not_configured',
+  'tebar_not_configured', 'reviewer_model_required',
   'ai_not_configured', 'ai_invalid_request', 'ai_unauthorized', 'ai_rate_limited',
   'ai_provider_error', 'ai_network_error', 'ai_invalid_response', 'ai_request_failed',
   'content_service_error', 'stale_generation', 'stale_facts',
@@ -134,9 +135,18 @@ function makeIdempotencyKey(slot) {
 }
 
 async function sendNotice(notifier, code, details = {}) {
-  if (!notifier || typeof notifier.send !== 'function') return false;
+  if (!notifier) return false;
+  if (code === 'unknown_outcome' && typeof notifier.flush === 'function') {
+    try { await notifier.flush(); return true; } catch { return false; }
+  }
+  if (typeof notifier.send !== 'function') return false;
   try {
-    if (!details.slotId) { await notifier.send(`Bot NDI: otomasi ${safeCode(code)}.`); return true; }
+    if (!details.slotId) {
+      const message = code === 'reviewer_model_required'
+        ? 'Bot NDI: pilih dan verifikasi model Generator dan Reviewer yang berbeda sebelum otomasi dapat berjalan.'
+        : `Bot NDI: otomasi ${safeCode(code)}.`;
+      await notifier.send(message); return true;
+    }
     let state = null;
     try { state = await details.repository?.getRuntimeState(); } catch { /* Use available slot details. */ }
     const slot = (state?.history || []).find((item) => String(item.id) === String(details.slotId)) || {};
@@ -290,6 +300,7 @@ async function runDispatcher({
   timezone = 'Asia/Jakarta',
   contentGenerator,
   generatorForModel,
+  reviewerForModel,
   logger,
   correlationId = randomUUID(),
   maxPublishAttempts = 2,
@@ -313,13 +324,6 @@ async function runDispatcher({
   if (state.contentStrategyReady !== true) {
     result.skipped++;
     await sendContentStrategyBlockNotice(notifier, state.contentStrategyReasonCode, now);
-    return result;
-  }
-
-  // A provider request with no definitive state blocks new posts until an
-  // operator can reconcile it. This is deliberately fail-closed.
-  if ((await repository.listUnsettledSlots(targetScope)).length > 0) {
-    result.unknown++;
     return result;
   }
 
@@ -349,6 +353,11 @@ async function runDispatcher({
       timezone: typeof schedule.timezone === 'string' ? schedule.timezone : timezone,
       schedule,
     });
+    if (planned?.blocked === 'REVIEWER_MODEL_REQUIRED') {
+      result.skipped++;
+      await sendNotice(notifier, 'reviewer_model_required');
+      return result;
+    }
     if (planned?.skippedCount > 0) {
       result.skipped += planned.skippedCount;
       await repository.appendActivity({ event: 'missed_slots_skipped', details: { count: planned.skippedCount } });
@@ -424,13 +433,24 @@ async function runDispatcher({
     state = { ...state, accountId: slot.accountId, profileId: slot.profileId };
   }
   let generated;
+  let contentReviewer;
   if (generatorForModel && slot.status !== 'ready') {
+    if (typeof reviewerForModel !== 'function' || !hasDistinctModels(slot.model, slot.reviewerModel)) {
+      await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+      await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'reviewer_model_required', attempts: 0 } });
+      await sendNotice(notifier, 'generation_failed', { repository, slotId: slot.id, diagnosticCode: 'reviewer_model_required' });
+      result.failed++;
+      return result;
+    }
     if (!slot.model) {
       await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
       result.failed++;
       return result;
     }
-    try { contentGenerator = await generatorForModel(slot.model); }
+    try {
+      contentGenerator = await generatorForModel(slot.model);
+      if (typeof reviewerForModel === 'function') contentReviewer = await reviewerForModel(slot.reviewerModel);
+    }
     catch (error) {
       if (!isOpenRouterNotConfigured(error)) throw error;
       generated = { status: 'skipped', reason: 'GENERATION_FAILED', diagnosticCode: 'ai_not_configured', attempts: 0,
@@ -460,19 +480,21 @@ async function runDispatcher({
     return result;
   } else if (!generated) {
     try {
-      const slotSettings = {
-        ...state.settings,
-        businessKnowledge: { ...state.settings.businessKnowledge, ctaUrl: slot.ctaUrl },
-      };
+      const sourceSettings = slot.generationSettings && typeof slot.generationSettings === 'object'
+        ? slot.generationSettings : state.settings;
+      const sourceKnowledge = slot.businessKnowledge && typeof slot.businessKnowledge === 'object'
+        ? slot.businessKnowledge : sourceSettings.businessKnowledge || state.settings.businessKnowledge;
+      const slotSettings = { ...sourceSettings, businessKnowledge: { ...sourceKnowledge, ctaUrl: slot.ctaUrl } };
       generated = await content({
         ...state,
         businessKnowledgeApproved: true,
         settings: slotSettings,
+        businessKnowledgeVersion: slot.businessKnowledgeVersion ?? state.businessKnowledgeVersion,
         now,
         history: state.history || [],
         facts: state.facts || [],
         slot,
-      }, contentGenerator ? { generate: contentGenerator } : undefined);
+      }, contentGenerator || contentReviewer ? { ...(contentGenerator ? { generate: contentGenerator } : {}), ...(contentReviewer ? { review: contentReviewer } : {}) } : undefined);
     } catch {
       generated = { status: 'skipped', reason: 'GENERATION_FAILED', diagnosticCode: 'content_service_error', attempts: 2 };
     }
@@ -507,6 +529,9 @@ async function runDispatcher({
         reasonCode: openRouterHoldReason, slotId: slot.id,
       }, correlationId);
     }
+    if (Array.isArray(generated?.reviewAttempts) && typeof repository.saveReviewAttempts === 'function') {
+      await repository.saveReviewAttempts(slot.id, generated.reviewAttempts);
+    }
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: code, completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, diagnosticCode, attempts: Math.min(2, generated?.attempts || 0) } });
     await sendNotice(notifier, code, { repository, slotId: slot.id, diagnosticCode, time: clock() });
@@ -515,8 +540,9 @@ async function runDispatcher({
   }
 
   if (!isPrepared) payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
-  const currentSafetyHash = contentSafetyHash(state.settings);
-  const ndiSettings = /** @type {{ hashtags?: string[], businessKnowledge?: { forbiddenClaims?: string[] } }} */ (state.settings || {});
+  const effectiveSlotSettings = slot.generationSettings && typeof slot.generationSettings === 'object' ? slot.generationSettings : state.settings;
+  const currentSafetyHash = contentSafetyHash(effectiveSlotSettings);
+  const ndiSettings = /** @type {{ hashtags?: string[], businessKnowledge?: { forbiddenClaims?: string[] } }} */ (effectiveSlotSettings || {});
   const finalCaptionCheck = validateNdiCaption(payload?.content, {
     ctaUrl: slot.ctaUrl,
     hashtags: ndiSettings.hashtags || [],
@@ -545,7 +571,9 @@ async function runDispatcher({
       factBearing: generated.factBearing === true,
       factIds: generated.factIds || [],
       ...(generated.factVersions ? { factVersions: generated.factVersions } : {}),
-      contentSafetyHash: contentSafetyHash(state.settings),
+      contentSafetyHash: contentSafetyHash(effectiveSlotSettings),
+      reviewed: generated.reviewed === true,
+      reviewMetadata: generated.reviewed === true ? { ...(generated.reviewMetadata || {}), reviewerModel: slot.reviewerModel || null } : null,
     });
     if (saved === false) {
       await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });

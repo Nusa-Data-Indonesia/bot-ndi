@@ -117,6 +117,7 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
     openRouter: {
       apiKey: env.OPENROUTER_API_KEY || undefined,
       model: env.OPENROUTER_MODEL || "google/gemini-3.8-flash",
+      reviewerModel: env.OPENROUTER_REVIEWER_MODEL || undefined,
       generatorSampling: { ...(temperature === undefined ? {} : { temperature }), ...(topP === undefined ? {} : { topP }) },
     },
     telegram: {

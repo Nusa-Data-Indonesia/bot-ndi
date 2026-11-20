@@ -5,16 +5,17 @@ const { createHash, randomUUID } = require('node:crypto');
 /**
  * @param {{
  *   repository?: {
- *     claimNotifications: (limit: number) => Promise<Array<{ id: number | string, message: string }>>,
+ *     claimNotifications: (limit: number) => Promise<Array<{ id: number | string, message: string, attempts?: number }>>,
  *     markNotificationSent: (id: number | string) => Promise<void>,
  *     retryNotification: (id: number | string, code: string) => Promise<void>,
  *     enqueueNotification: (input: { dedupeKey: string, message: string }) => Promise<boolean>,
  *     getNotificationStatus: (dedupeKey: string) => Promise<string | null>
  *   },
- *   transport?: { send: (message: string) => Promise<unknown> }
+ *   transport?: { send: (message: string) => Promise<unknown> },
+ *   logger?: { warn?: (event: string, details?: Record<string, unknown>) => void }
  * }} [options]
  */
-function createOutboxNotifier({ repository, transport } = {}) {
+function createOutboxNotifier({ repository, transport, logger } = {}) {
   if (!repository || !transport || typeof transport.send !== 'function') {
     throw new TypeError('repository and Telegram transport are required');
   }
@@ -32,6 +33,8 @@ function createOutboxNotifier({ repository, transport } = {}) {
           sent++;
         } catch (error) {
           const safeCode = /^[a-z][a-z0-9_]{1,63}$/.test(error?.code || '') ? error.code : 'delivery_failed';
+          try { logger?.warn?.('telegram.delivery_failed', { notificationId: String(notice.id).slice(0, 64), code: safeCode, attempt: notice.attempts }); }
+          catch { /* Logging is secondary to durable retry state. */ }
           await repository.retryNotification(notice.id, safeCode);
         }
       }

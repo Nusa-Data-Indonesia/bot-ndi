@@ -238,7 +238,8 @@
           <div><p class="eyebrow">KONFIGURASI AI</p><h2 id="ai-title">Model OpenRouter</h2><p class="muted">Model aktif dipakai pada generasi berikutnya. Kunci API tetap disimpan di server.</p></div>
           <div id="ai-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
           <div id="ai-provider-holds" class="notice warning publication-holds" role="status" hidden></div>
-          <dl class="integration-summary"><div><dt>Model aktif</dt><dd id="ai-active-model">Belum tersedia</dd><p id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</p></div></dl>
+          <dl class="integration-summary"><div><dt>Model Generator aktif</dt><dd id="ai-active-model">Belum tersedia</dd><p id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</p></div><div><dt>Model Reviewer aktif</dt><dd id="ai-active-reviewer-model">Belum tersedia</dd><p id="ai-active-reviewer-model-status" class="field-hint">Reviewer wajib memakai model berbeda.</p></div></dl>
+          <div id="ai-dual-model-status" class="notice warning" role="status" aria-live="polite">Dua model berbeda diperlukan sebelum otomasi dapat diaktifkan.</div>
           <div class="form-actions"><button id="ai-refresh" type="button" class="button quiet">Muat ulang model</button></div>
         </section>
         <form id="integration-model-form" class="panel form-grid">
@@ -262,7 +263,15 @@
           <div id="integration-model-validation" class="notice info full" role="status" aria-live="polite">Model belum diverifikasi.</div>
           <div class="form-footer full"><button class="button quiet" id="integration-model-catalog" type="button">Muat katalog</button><button class="button quiet" id="integration-model-verify" type="button" disabled>Verifikasi Model</button><button class="button primary" type="submit" disabled>Simpan Perubahan</button></div>
         </form>
+        <form id="reviewer-model-form" class="panel form-grid">
+          <div class="panel-heading full"><div><p class="eyebrow">AI REVIEWER</p><h2>Model Reviewer</h2><p class="muted">Reviewer wajib menggunakan model berbeda. Model ini hanya dipanggil saat caption gagal validasi deterministik dan dapat diperbaiki.</p></div></div>
+          <div class="field full"><label for="reviewer-model-select">Pilih Model Reviewer</label><select id="reviewer-model-select" name="model" required aria-describedby="reviewer-model-help reviewer-model-validation"><option value="">Muat katalog lalu pilih model</option></select><span id="reviewer-model-help" class="field-hint">Model Generator saat ini tidak dapat dipilih sebagai Reviewer.</span></div>
+          <div id="reviewer-model-error" class="notice error full" role="alert" hidden></div>
+          <div id="reviewer-model-validation" class="notice info full" role="status" aria-live="polite">Model Reviewer belum diverifikasi.</div>
+          <div class="form-footer full"><button class="button quiet" id="reviewer-model-verify" type="button" disabled>Verifikasi Model Reviewer</button><button class="button primary" type="submit" disabled>Simpan Model Reviewer</button></div>
+        </form>
         <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT MODEL</p><h2>Perubahan model AI</h2><p class="muted">Pulihkan model dari versi sebelumnya setelah model divalidasi kembali.</p></div></div><div id="integration-model-history" class="integration-history"></div></section>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT REVIEWER</p><h2>Perubahan model Reviewer</h2><p class="muted">Pemulihan model Reviewer tetap memeriksa model Generator dan memerlukan dua ID yang berbeda.</p></div></div><div id="integration-reviewer_model-history" class="integration-history"></div></section>
       </section>
       <section id="tab-admins" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-admins" aria-hidden="true" tabindex="0" hidden>
         <form id="admin-create-form" class="panel form-grid">

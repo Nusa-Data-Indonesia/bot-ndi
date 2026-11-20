@@ -14,6 +14,7 @@ const xss = '<img src=x onerror=alert(1)>';
 const unknown = {
   id: slotId, caption: xss, status: 'unknown', providerStatus: 'unknown', providerPostId: null,
   profileId: 'original-profile', accountId: 'original-account', errorCode: 'network_error',
+  unknownOccurrenceCount: 3,
   scheduledAt: '2026-11-15T09:01:00.000Z', publishStartedAt: '2026-11-15T09:01:58.000Z', completedAt: null,
 };
 
@@ -93,6 +94,7 @@ test('lists all blockers, renders caption and evidence as text, and offers actio
   assert.ok(fields.includes('original-profile'));
   assert.ok(fields.includes('original-account'));
   assert.ok(fields.includes('network_error'));
+  assert.ok(fields.some((value) => String(value) === '3'));
   assert.ok(fields.some((value) => /16[.:]01[.:]58/.test(value) && /WIB/.test(value)));
   assert.ok(button(cards[0], /Tutup sebagai tidak terverifikasi/i));
   assert.ok(button(cards[0], /Kaitkan/));

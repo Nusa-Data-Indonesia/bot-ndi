@@ -21,7 +21,7 @@ const CONTENT_STRATEGY = {
 
 function harness(overrides = {}) {
   const calls = [];
-  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY };
+  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL, model: 'test/generator', reviewerModel: 'test/reviewer', contentStrategy: CONTENT_STRATEGY };
   const repository = {
     getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, businessKnowledgeApproved: true, contentStrategyReady: true, accountId: 'acct-1', settings: NDI_SETTINGS, facts: [], history: [] }),
     ensureNextDueSlot: async () => ({ slot, created: true, skippedCount: 0 }),
@@ -96,6 +96,25 @@ test('keeps publication closed until the Phase B category and style engine is re
   assert.equal(rig.calls.some(([kind]) => kind === 'prepared'), false);
 });
 
+test('empty category or style configuration fails closed and notifies the administrator', async () => {
+  for (const [reasonCode, expectedNotice] of [
+    ['CONTENT_CATEGORIES_EMPTY', /tidak ada kategori konten NDI yang aktif/i],
+    ['CONTENT_STYLES_EMPTY', /tidak ada gaya konten NDI yang aktif/i],
+  ]) {
+    const notices = [];
+    const rig = harness({ repository: {
+      getRuntimeState: async () => ({ contentStrategyReady: false, contentStrategyReasonCode: reasonCode }),
+      ensureNextDueSlot: async () => assert.fail('unready category/style must not plan a slot'),
+    } });
+    const result = await runDispatcher({ repository: rig.repository, publisher: rig.publisher, content,
+      notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
+
+    assert.equal(result.claimed, 0);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], expectedNotice);
+  }
+});
+
 test('cancels a claimed legacy slot without strategy snapshot before generation or publication', async () => {
   const { calls, slot, repository, publisher } = harness();
   delete slot.contentStrategy;
@@ -123,14 +142,17 @@ test('dynamic dispatcher binds publication and both AI calls to the slot snapsho
   state.profileId = 'old-profile';
   repository.getRuntimeState = async () => state;
   const models=[]; const profiles=[]; const aiCalls=[]; const logs=[];
+  const reviewerModels=[];
   const result = await runDispatcher({ repository, publisher, clock: fixedClock,
     publisherForProfile: async profile => { profiles.push(profile); return publisher; },
     generatorForModel: async model => { models.push(model); return async input => { aiCalls.push(input); return 'ok'; }; },
+    reviewerForModel: async model => { reviewerModels.push(model); return async input => { aiCalls.push(input); return 'ok'; }; },
     logger: { info: (event, details) => logs.push({ event, details }) }, correlationId: 'correlation-test',
     content: async (_context, { generate }) => { await generate('generation'); await generate('audit'); return content(); },
   });
   assert.equal(result.published,1);
   assert.deepEqual(models,['vendor/model-old']);
+  assert.deepEqual(reviewerModels,['test/reviewer']);
   assert.deepEqual(profiles,['old-profile']);
   assert.deepEqual(aiCalls,['generation','audit']);
   assert.ok(logs.some(entry=>entry.event==='publication.sending' && entry.details.correlationId==='correlation-test' && entry.details.slotId==='slot-1'));
@@ -232,7 +254,7 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   let publishCalls = 0;
   publisher.publishNow = async (payload, key) => {
     publishCalls++;
-    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'ndi', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings) }]);
+    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'ndi', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings), reviewed: false, reviewMetadata: null }]);
     return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
@@ -267,6 +289,20 @@ test('dispatcher persists and publishes the exact final caption including hashta
   assert.equal(prepared.requestPayload.content, finalText);
   assert.equal(prepared.caption, finalText);
   assert.deepEqual(sentPayload, prepared.requestPayload);
+});
+
+test('successful Reviewer correction stays marked when publication later becomes unknown', async () => {
+  const { calls, repository, publisher } = harness();
+  publisher.publishNow = async () => { throw Object.assign(new Error('mock timeout'), { unknownOutcome: true, code: 'network_error' }); };
+  const reviewedContent = async () => ({ ...(await content()), reviewed: true,
+    reviewMetadata: { rationaleCode: 'FIXED_VALIDATION', revisionCount: 1 } });
+  const result = await runDispatcher({ repository, publisher, content: reviewedContent, clock: fixedClock });
+  const prepared = calls.find(([kind]) => kind === 'prepared')[2];
+
+  assert.equal(result.unknown, 1);
+  assert.equal(prepared.reviewed, true);
+  assert.deepEqual(prepared.reviewMetadata, { rationaleCode: 'FIXED_VALIDATION', revisionCount: 1, reviewerModel: 'test/reviewer' });
+  assert.ok(calls.some(([kind, , patch]) => kind === 'update' && patch.status === 'unknown'));
 });
 
 test('automation off and incomplete onboarding never claim or publish', async () => {
@@ -677,18 +713,48 @@ test('direct provider confirmation anchors cadence to its confirmed Threads targ
     && call[2].status === 'published' && call[2].completedAt === publishedAt));
 });
 
-test('unknown publish without provider ID is not replayed and blocks new slots', async () => {
-  const { calls, repository, publisher } = harness({ repository: {
+test('unknown publish without provider ID is never replayed and does not block a distinct scheduled slot', async () => {
+  const { calls, slot, repository, publisher } = harness({ repository: {
     listUnsettledSlots: async () => [{ id: 'slot-unknown', status: 'unknown', requestPayload: { content: 'same payload', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'same-key' }],
   } });
+  const nextSlot = { ...slot, id: 'slot-next', status: 'generating', scheduledAt: '2026-11-05T05:00:00Z' };
+  let claims = 0;
   let sends = 0;
-  repository.claimDueSlot = async () => assert.fail('unresolved publish must block new slots');
-  publisher.publishNow = async () => { sends++; assert.fail('ambiguous publish must not be replayed'); };
+  repository.ensureNextDueSlot = async () => ({ slot: nextSlot, created: true, skippedCount: 0 });
+  repository.claimDueSlot = async () => { claims++; return nextSlot; };
+  publisher.publishNow = async (payload, key) => { sends++; assert.notEqual(payload.content, 'same payload'); assert.notEqual(key, 'same-key'); return { id: 'new-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.reconciled, 0);
-  assert.equal(result.unknown, 1);
-  assert.equal(sends, 0);
-  assert.equal(calls.some((call) => call[0] === 'update'), false);
+  assert.equal(result.unknown, 0);
+  assert.equal(result.published, 1);
+  assert.equal(claims, 1);
+  assert.equal(sends, 1);
+  assert.equal(calls.some((call) => call[0] === 'update' && call[1] === 'slot-unknown'), false);
+});
+
+test('failed unknown Telegram flush does not block a later slot or replay the original request', async () => {
+  const { calls, slot, repository, publisher } = harness();
+  const nextSlot = { ...slot, id: 'slot-next-after-unknown', scheduledAt: '2026-11-05T10:00:00Z' };
+  let plannedSlot = slot;
+  const publishKeys = [];
+  repository.ensureNextDueSlot = async () => ({ slot: plannedSlot, created: true, skippedCount: 0 });
+  repository.claimDueSlot = async () => plannedSlot;
+  publisher.publishNow = async (_payload, key) => {
+    publishKeys.push(key);
+    if (publishKeys.length === 1) throw Object.assign(new Error('mock timeout'), { code: 'network_error', unknownOutcome: true });
+    return { id: 'next-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
+  };
+  const notifier = { flush: async () => { throw new Error('mock Telegram outage'); } };
+
+  const first = await runDispatcher({ repository, publisher, content, notifier, clock: fixedClock });
+  assert.equal(first.unknown, 1);
+  assert.equal(calls.some((call) => call[0] === 'update' && call[1] === slot.id && call[2].status === 'unknown'), true);
+
+  plannedSlot = nextSlot;
+  const second = await runDispatcher({ repository, publisher, content, notifier, clock: fixedClock });
+  assert.equal(second.published, 1);
+  assert.deepEqual(publishKeys, ['km_slot-1', 'km_slot-next-after-unknown']);
+  assert.equal(calls.some((call) => call[0] === 'update' && call[1] === slot.id && call[2].status === 'ready'), false);
 });
 
 test('unrelated account unsettled slots do not block dispatch for the active account', async () => {
@@ -699,20 +765,22 @@ test('unrelated account unsettled slots do not block dispatch for the active acc
   } });
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.published, 1, JSON.stringify({ result, scopes, calls }));
-  assert.ok(scopes.length >= 2);
+  assert.equal(scopes.length, 1);
   assert.ok(scopes.every((scope) => scope?.profileId === 'profile-current' && scope?.accountId === 'acct-1'));
 });
 
-test('an unsettled slot for the active account still blocks dispatch', async () => {
+test('an unsettled slot for the active account does not block the next distinct scheduled slot', async () => {
+  let claims = 0;
   const { repository, publisher } = harness({ repository: {
     getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, profileId: 'profile-current', accountId: 'acct-1', settings: { automationSessionId: 'session-1' }, facts: [], history: [] }),
     listUnsettledSlots: async (scope) => scope?.profileId === 'profile-current' && scope?.accountId === 'acct-1'
       ? [{ id: 'current-slot', profileId: 'profile-current', accountId: 'acct-1', providerPostId: 'current-post', requestPayload: { targets: [{ account_id: 'acct-1' }] } }]
       : [],
-    claimDueSlot: async () => assert.fail('the active account blocker must stop slot claiming'),
+    claimDueSlot: async () => { claims++; return { id: 'next-slot', scheduledAt: '2026-11-05T10:00:00Z', automationSessionId: 'session-1', ctaUrl: CTA_URL, contentStrategy: CONTENT_STRATEGY }; },
   }, publisher: { getPost: async () => ({ id: 'current-post', status: 'publishing', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'publishing' }] }) } });
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
-  assert.equal(result.claimed, 0);
+  assert.equal(result.claimed, 1);
+  assert.equal(claims, 1);
   assert.ok(result.unknown >= 1);
 });
 
@@ -761,6 +829,7 @@ test('missing OpenRouter configuration stores a global hold and fails only the c
   const result = await runDispatcher({ repository, publisher,
     content: async () => { contentCalls++; return content(); },
     generatorForModel: async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
+    reviewerForModel: async () => async () => assert.fail('Reviewer must not be called after Generator initialization fails'),
     notifier: { send: async (message) => notices.push(message) },
     clock: fixedClock,
   });
@@ -781,7 +850,8 @@ test('unrecognized model initialization errors are not reclassified as missing O
   slot.model = 'vendor/model';
   const failure = Object.assign(new Error('unexpected initialization failure'), { code: 'not_configured' });
   await assert.rejects(runDispatcher({ repository, publisher, content,
-    generatorForModel: async () => { throw failure; }, clock: fixedClock,
+    generatorForModel: async () => { throw failure; },
+    reviewerForModel: async () => async () => assert.fail('Reviewer must not be called after Generator initialization fails'), clock: fixedClock,
   }), error => error === failure);
   assert.deepEqual(holds, []);
   assert.equal(calls.some((call) => call[0] === 'update' && call[2]?.status === 'failed'), false);

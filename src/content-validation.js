@@ -9,6 +9,42 @@ const INVITATION = /\b(?:mari|yuk|silakan|hubungi|diskusikan|bicarakan|ceritakan
 const BUSINESS_CONTEXT = /\b(?:kebutuhan|solusi|layanan|sistem|data|teknologi|dashboard|api|integrasi|perangkat lunak|bisnis|tim|organisasi)\b/iu;
 const HYPOTHETICAL_SCENARIO = /\b(?:misalkan|misalnya sebuah (?:tim|perusahaan|organisasi)|andaikan|bayangkan|hipotetis|fiktif|skenario simulasi|hypothetical|fictional company|suppose|imagine)\b/iu;
 
+const REPAIRABLE_CONTENT_CODES = new Set([
+  'EMPTY_CAPTION', 'CAPTION_TOO_LONG', 'CTA_URL_NOT_FINAL', 'UNAPPROVED_LINK', 'DUPLICATE_LINK',
+  'MISSING_REQUIRED_LINK', 'MISSING_CONTEXTUAL_INVITATION', 'UNLABELED_HYPOTHETICAL_SCENARIO',
+  'LEGACY_BUSINESS_CONTENT', 'FORBIDDEN_CLAIM', 'UNSUPPORTED_NUMERIC_CLAIM',
+  'POSSIBLE_PERSONAL_INFORMATION', 'UNAPPROVED_HASHTAG', 'DUPLICATE_HASHTAG',
+  'MISSING_REQUIRED_HASHTAGS', 'REPETITIVE_CAPTION',
+]);
+const VIOLATION_DESCRIPTIONS = Object.freeze({
+  EMPTY_CAPTION: ['caption.body', 'Caption harus memiliki isi.'],
+  CAPTION_TOO_LONG: ['caption', 'Caption melebihi batas panjang Threads.'],
+  INVALID_CONFIGURED_CTA: ['configuration.ctaUrl', 'URL CTA resmi tidak valid pada konfigurasi.'],
+  CTA_URL_NOT_FINAL: ['caption.cta', 'CTA URL resmi harus berada di baris terakhir.'],
+  UNAPPROVED_LINK: ['caption.links', 'Caption memuat tautan yang tidak disetujui.'],
+  DUPLICATE_LINK: ['caption.links', 'Caption harus memuat tepat satu tautan.'],
+  MISSING_REQUIRED_LINK: ['caption.cta', 'Caption harus memuat CTA URL yang dikonfigurasi.'],
+  MISSING_CONTEXTUAL_INVITATION: ['caption.body', 'Caption harus berisi undangan kontekstual terkait kebutuhan bisnis.'],
+  UNLABELED_HYPOTHETICAL_SCENARIO: ['caption.body', 'Skenario hipotetis harus diberi label ilustrasi.'],
+  LEGACY_BUSINESS_CONTENT: ['caption.body', 'Caption memuat topik yang dilarang untuk konten NDI.'],
+  FORBIDDEN_CLAIM: ['caption.body', 'Caption memuat klaim yang dilarang.'],
+  UNSUPPORTED_NUMERIC_CLAIM: ['caption.body', 'Hapus klaim angka yang tidak didukung pengetahuan yang disetujui.'],
+  POSSIBLE_PERSONAL_INFORMATION: ['caption.body', 'Caption tampaknya memuat informasi pribadi.'],
+  INVALID_HASHTAGS: ['configuration.hashtags', 'Hashtag wajib tidak valid pada konfigurasi.'],
+  UNAPPROVED_HASHTAG: ['caption.hashtags', 'Hapus atau ganti hashtag yang tidak disetujui.'],
+  DUPLICATE_HASHTAG: ['caption.hashtags', 'Hapus hashtag duplikat.'],
+  MISSING_REQUIRED_HASHTAGS: ['caption.hashtags', 'Cantumkan seluruh hashtag yang dikonfigurasi.'],
+  REPETITIVE_CAPTION: ['caption.body', 'Caption terlalu mirip dengan konten yang baru dipublikasikan.'],
+});
+
+function structureViolations(errors) {
+  return [...new Set(errors)].map((code) => {
+    const [path, description] = VIOLATION_DESCRIPTIONS[code] || ['caption', 'Caption gagal pada pemeriksaan kebijakan.'];
+    return Object.freeze({ code, path, description,
+      repairability: REPAIRABLE_CONTENT_CODES.has(code) ? 'repairable_content' : 'nonrepairable_configuration_system' });
+  });
+}
+
 function words(text) {
   return text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(URL, ' ').replace(TAG, ' ').toLocaleLowerCase('id').match(/[\p{L}\p{N}]+/gu) || [];
@@ -39,7 +75,10 @@ function repetitive(text, recentCaptions) {
 // Deterministic checks complement the independent semantic review; they do not
 // establish that every claim in natural language is supported.
 function validateNdiCaption(text, context = {}) {
-  if (typeof text !== 'string' || !text.trim()) return { valid: false, errors: ['EMPTY_CAPTION'] };
+  if (typeof text !== 'string' || !text.trim()) {
+    const errors = ['EMPTY_CAPTION'];
+    return { valid: false, errors, violations: structureViolations(errors) };
+  }
   const errors = [];
   if ([...text].length > 500) errors.push('CAPTION_TOO_LONG');
   const normalized = text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '');
@@ -77,7 +116,8 @@ function validateNdiCaption(text, context = {}) {
   }
   if ([...allowed].some((tag) => !seen.has(tag))) errors.push('MISSING_REQUIRED_HASHTAGS');
   if (repetitive(bodyWithoutTags, Array.isArray(context.recentCaptions) ? context.recentCaptions : [])) errors.push('REPETITIVE_CAPTION');
-  return { valid: errors.length === 0, errors: [...new Set(errors)] };
+  const uniqueErrors = [...new Set(errors)];
+  return { valid: uniqueErrors.length === 0, errors: uniqueErrors, violations: structureViolations(uniqueErrors) };
 }
 
 module.exports = { validateNdiCaption };

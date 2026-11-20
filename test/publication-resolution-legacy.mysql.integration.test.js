@@ -59,6 +59,20 @@ test('legacy publishing rows without a verified target can be recovered and clos
   } finally {
     await pool.execute('DELETE FROM publication_resolution_events WHERE slot_id IN (?,?)', slotIds).catch(() => {});
     await pool.execute('DELETE FROM activity_logs WHERE slot_id IN (?,?)', slotIds).catch(() => {});
+    const [unknownEvents] = await pool.execute('SELECT id,slot_id,occurrence_no FROM publication_unknown_events WHERE slot_id IN (?,?)', slotIds).catch(() => [[]]);
+    if (unknownEvents.length) {
+      const eventIds = unknownEvents.map(event => event.id);
+      const placeholders = eventIds.map(() => '?').join(',');
+      const [alerts] = await pool.execute(`SELECT id,dedupe_key FROM publication_unknown_threshold_alerts WHERE threshold_event_id IN (${placeholders})`, eventIds);
+      const outboxKeys = [
+        ...unknownEvents.map(event => require('node:crypto').createHash('sha256').update(`unknown-slot:${event.slot_id}:${event.occurrence_no}`).digest('hex')),
+        ...alerts.map(alert => alert.dedupe_key),
+      ];
+      if (outboxKeys.length) await pool.execute(`DELETE FROM notification_outbox WHERE dedupe_key IN (${outboxKeys.map(() => '?').join(',')})`, outboxKeys);
+      await pool.execute(`DELETE FROM publication_unknown_threshold_alerts WHERE threshold_event_id IN (${placeholders})`, eventIds);
+      await pool.execute(`DELETE FROM publication_unknown_events WHERE id IN (${placeholders})`, eventIds);
+    }
+    await pool.execute('DELETE FROM slot_content_review_attempts WHERE slot_id IN (?,?)', slotIds).catch(() => {});
     await pool.execute('DELETE FROM slots WHERE id IN (?,?)', slotIds).catch(() => {});
     if (actorId) await pool.execute('DELETE FROM admins WHERE id=?', [actorId]).catch(() => {});
     await pool.end();

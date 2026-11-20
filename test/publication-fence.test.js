@@ -170,7 +170,8 @@ test('the repository fence contract holds row and session locks through durable 
   assert.equal(await publishing, 'provider-result');
   assert.deepEqual(events, ['begin', 'commit', 'release']);
   assert.deepEqual(statements.filter(({ sql }) => sql.includes('FOR UPDATE')).map(({ sql }) => (
-    sql.includes('FROM settings') ? 'settings' : sql.includes('FROM integration_config') ? 'integration' : 'slot'
+    sql.includes('FROM settings') ? 'settings' : sql.includes('dual_ai_unknown_alert_lock') ? 'alert-lock'
+      : sql.includes('FROM integration_config') ? 'integration' : 'slot'
   )), ['settings', 'integration', 'slot']);
   assert.ok(statements.some(({ sql }) => sql.includes('SELECT automation_enabled,settings_json FROM settings WHERE id=1 FOR UPDATE')));
   assert.ok(statements.some(({ sql }) => sql.includes('SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE')));

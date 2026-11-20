@@ -145,6 +145,12 @@ test('021–023 upgrade legacy state additively, seed strategy once, and keep po
     assert.equal(integration.model, 'test-model-only');
     assert.equal(integration.status, 'ACTIVE');
 
+    await fs.copyFile(path.join(sourceDir, '024_dual_ai_and_unknown_continuation.sql'), path.join(migrationDir, '024_dual_ai_and_unknown_continuation.sql'));
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), ['024_dual_ai_and_unknown_continuation.sql']);
+    assert.deepEqual(await runMigrations(pool, { migrationsDir: migrationDir }), [], 'migration 024 must be restartable after the legacy 021–023 upgrade');
+    const [[backfilledUnknown]] = await pool.execute('SELECT COUNT(*) AS count FROM publication_unknown_events WHERE slot_id=?', [slotFixtures.find((slot) => slot.status === 'unknown').id]);
+    assert.equal(Number(backfilledUnknown.count), 1, 'migration 024 preserves an existing unknown slot and records its initial occurrence once');
+
     const [slots] = await pool.execute('SELECT id,status,pillar,provider_status,provider_post_id,caption,request_payload,cta_url FROM slots ORDER BY scheduled_at');
     assert.equal(slots.length, slotFixtures.length);
     for (const fixture of slotFixtures) {
@@ -207,9 +213,13 @@ test('021–023 upgrade legacy state additively, seed strategy once, and keep po
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:02:00.000Z'), categoryB.id, new Date('2026-11-18T10:00:00.000Z')]);
     const orderedState = await repository.getRuntimeState();
     assert.equal(orderedState.contentStrategy.latestCategoryId, String(categoryB.id), 'provider publication time wins over slot insertion order');
-    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'unknown',?,NULL)", [randomUUID(), new Date('2026-11-18T00:03:00.000Z'), categoryA.id]);
+    const lateConfirmationSlotId = randomUUID();
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_post_id,content_category_id,provider_published_at) VALUES (?,?,'unknown',?,?,NULL)", [lateConfirmationSlotId, new Date('2026-11-18T00:03:00.000Z'), 'late-confirmed-mock-post', categoryA.id]);
     assert.equal((await repository.getRuntimeState()).contentStrategy.orderUncertain, false, 'unknown outcomes do not count as successful publications');
+    await repository.updateSlotFromProvider('late-confirmed-mock-post', 'published', { providerPublishedAt: new Date('2026-11-18T11:00:00.000Z') });
+    assert.equal((await repository.getRuntimeState()).contentStrategy.latestCategoryId, String(categoryA.id), 'a late confirmed provider timestamp updates category ordering');
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:04:00.000Z'), categoryA.id, new Date('2026-11-18T10:00:00.000Z')]);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,content_category_id,provider_published_at) VALUES (?,?,'published',?,?)", [randomUUID(), new Date('2026-11-18T00:05:00.000Z'), categoryB.id, new Date('2026-11-18T11:00:00.000Z')]);
     assert.equal((await repository.getRuntimeState()).contentStrategy.orderUncertain, true, 'timestamp ties across categories block further rotation');
 
     const webRun = await repository.startWebsiteSyncRun(adminId);

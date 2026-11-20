@@ -48,6 +48,7 @@ test('separate system-error events do not reuse a permanently sent dedupe key', 
 
 test('failed Telegram delivery stays in the retryable outbox and does not leak provider errors', async () => {
   let retries = 0;
+  const logs = [];
   const repository = {
     enqueueNotification: async () => {},
     claimNotifications: async () => [{ id: 1, message: 'safe notice', attempts: 1 }],
@@ -55,9 +56,13 @@ test('failed Telegram delivery stays in the retryable outbox and does not leak p
     retryNotification: async (_id, code) => { assert.equal(code, 'delivery_failed'); retries++; },
     getNotificationStatus: async () => 'pending',
   };
-  const notifier = createOutboxNotifier({ repository, transport: { send: async () => { throw new Error('token=secret'); } } });
+  const notifier = createOutboxNotifier({ repository, transport: { send: async () => { throw new Error('token=secret'); } },
+    logger: { warn: (...args) => logs.push(args) } });
   await assert.rejects(notifier.send('safe notice'), { code: 'notification_delivery_pending' });
   assert.equal(retries, 1);
+  assert.equal(logs[0][0], 'telegram.delivery_failed');
+  assert.deepEqual(logs[0][1], { notificationId: '1', code: 'delivery_failed', attempt: 1 });
+  assert.doesNotMatch(JSON.stringify(logs), /token=secret/);
 });
 
 test('daily click insight treats missing permissions and null provider values as unavailable', () => {

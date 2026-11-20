@@ -60,6 +60,7 @@ test('NDI dashboard readiness and unknown-publication review on disposable MySQL
     ...process.env,
     NODE_ENV: 'test', PORT: String(port), BASE_URL: baseUrl,
     SCHEDULER_ENABLED: 'false', EXTERNAL_INTEGRATIONS_ENABLED: 'false',
+    NODE_OPTIONS: `--require=${path.join(ROOT, 'test/deny-external-network.cjs')}`,
     DB_POOL_SIZE: '3', TEBAR_API_KEY: '', TEBAR_PROFILE_ID: '', TEBAR_ACCOUNT_ID: '',
     OPENROUTER_API_KEY: '', OPENROUTER_MODEL: '', TELEGRAM_BOT_TOKEN: '', TELEGRAM_CHAT_ID: '',
     LEARNING_CAPTURE_ENABLED: 'false', LEARNING_ACTIVATION_ENABLED: 'false',
@@ -121,6 +122,14 @@ test('NDI dashboard readiness and unknown-publication review on disposable MySQL
   ].find((candidate) => candidate && fs.existsSync(candidate));
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], ...(chromePath ? { executablePath: chromePath } : {}) });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.route('**/*', async (route) => {
+    const hostname = new URL(route.request().url()).hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname === '::1' || hostname === '127.0.0.1' || hostname.startsWith('127.')) {
+      await route.fallback();
+    } else {
+      await route.abort('blockedbyclient');
+    }
+  });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   page.setDefaultNavigationTimeout(8000);
