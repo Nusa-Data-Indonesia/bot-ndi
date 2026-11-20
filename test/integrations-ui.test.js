@@ -24,6 +24,8 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
   assert.match(ai, /name="model"/);
   assert.match(ai, /id="reviewer-model-form"/);
   assert.match(ai, /id="reviewer-model-select"[^>]*name="model"/);
+  assert.match(ai, /id="reviewer-model-manual"/);
+  assert.match(ai, /id="reviewer-model-use-manual"/);
   assert.match(ai, /Model Reviewer aktif/);
   assert.match(ai, /id="integration-reviewer_model-history"/);
   assert.doesNotMatch(ai, /name="reviewerEnabled"|name="reviewerEnabled"/);

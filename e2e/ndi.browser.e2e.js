@@ -160,6 +160,50 @@ test('NDI dashboard readiness and unknown-publication review on disposable MySQL
     await assertAccessible(page, 'NDI dashboard');
   });
 
+  await t.test('Reviewer accepts a manual Model ID only after mocked OpenRouter verification', async () => {
+    const [[originalConfig]] = await pool.query('SELECT model,reviewer_model FROM integration_config WHERE id=1');
+    await pool.execute("UPDATE integration_config SET model='test/generator',reviewer_model=NULL WHERE id=1");
+    let validationRequests = 0;
+    let validatedModel = null;
+    await page.route('**/api/integrations/validate-reviewer-model', async (route) => {
+      validationRequests++;
+      validatedModel = route.request().postDataJSON()?.model || null;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        model: { id: validatedModel, name: 'Manual Reviewer Test Model', provider: 'test' },
+      }) });
+    });
+    try {
+      await page.getByRole('tab', { name: 'AI', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('#ai-active-model')?.textContent === 'test/generator');
+      await page.locator('#reviewer-model-manual-panel summary').click();
+      const manualInput = page.locator('#reviewer-model-manual');
+      await manualInput.fill('invalid-model-id');
+      await page.locator('#reviewer-model-use-manual').click();
+      await page.locator('#reviewer-model-validation').getByText(/Format Model ID tidak valid/u).waitFor();
+      assert.equal(validationRequests, 0, 'malformed IDs are rejected locally before provider validation');
+      assert.equal(await page.locator('#reviewer-model-verify').isDisabled(), true);
+      assert.equal(await page.locator('#reviewer-model-form button[type="submit"]').isDisabled(), true);
+
+      await manualInput.fill('custom/reviewer-model');
+      await page.locator('#reviewer-model-use-manual').click();
+      assert.equal(await page.locator('#reviewer-model-select').inputValue(), 'custom/reviewer-model');
+      assert.equal(await page.locator('#reviewer-model-verify').isEnabled(), true);
+      assert.equal(await page.locator('#reviewer-model-form button[type="submit"]').isDisabled(), true,
+        'manual selection alone must not enable saving');
+
+      await page.locator('#reviewer-model-verify').click();
+      await page.waitForFunction(() => document.querySelector('#reviewer-model-validation')?.dataset.validationStatus === 'AVAILABLE');
+      assert.equal(validationRequests, 1);
+      assert.equal(validatedModel, 'custom/reviewer-model');
+      assert.equal(await page.locator('#reviewer-model-form button[type="submit"]').isEnabled(), true,
+        'saving becomes available only after backend metadata verification');
+      await assertAccessible(page, 'manual Reviewer model selection and verification');
+    } finally {
+      await page.unroute('**/api/integrations/validate-reviewer-model');
+      await pool.execute('UPDATE integration_config SET model=?,reviewer_model=? WHERE id=1', [originalConfig.model, originalConfig.reviewer_model]);
+    }
+  });
+
   await t.test('website synchronization is click-only and renders website text as inert content', async () => {
     let reads = 0;
     let syncPosts = 0;

@@ -41,7 +41,7 @@ CI menjalankan schema MySQL disposable terisolasi per job. Tes upgrade menanam d
 
 `npm run test:ndi:browser` menjalankan Chromium headless terhadap server lokal dan schema `bot_ndi_browser_test` di MySQL loopback. Scheduler dan external integrations tetap `false`; network routing browser menolak host di luar loopback. Jalankan hanya terhadap DB disposable yang terpisah dari `bot_ndi_test`.
 
-Pada branch Dual AI, tes browser **PASS 4/4** dengan MySQL disposable pada loopback dan Chromium lokal. Website API diuji lewat response intercept; scheduler dan external integrations nonaktif, tanpa real-site fetch atau provider call.
+Pada branch Dual AI, tes browser **PASS 5/5** dengan MySQL disposable pada loopback dan Chromium lokal. Website API dan validasi metadata Reviewer diuji lewat response intercept; scheduler dan external integrations nonaktif, tanpa real-site fetch atau provider call.
 
 ## Cakupan
 
@@ -59,7 +59,7 @@ Pada branch Dual AI, tes browser **PASS 4/4** dengan MySQL disposable pada loopb
 
 - `npm test`: 532 total, 525 passed, 0 failed, 7 skipped; database-specific migration suites were run separately.
 - `npm run test:integration`: 97 passed, 0 failed/skipped; MySQL configuration check terpisah: 1 passed.
-- `npm run test:ndi:browser`: 4 passed, 0 failed/skipped.
+- `npm run test:ndi:browser`: 5 passed, 0 failed/skipped, including manual Reviewer Model ID entry with mocked metadata validation and a disabled Save button until verification.
 - Migration 018, Learning upgrade, publication migration 020, publication fence, legacy publication resolution, dan NDI migration 021–024: masing-masing 1 passed.
 - Focused Dual AI content/dispatcher tests: 76 passed; Dual AI MySQL integration: 1 passed.
 - `npm run lint`, `npm run typecheck`, `npm run check`, `npm audit --audit-level=high`, Compose config, workflow YAML parse, dan deploy shell syntax: PASS; audit menemukan 0 vulnerability.

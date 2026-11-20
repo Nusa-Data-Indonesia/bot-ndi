@@ -34,6 +34,10 @@
     if (['INVALID_MODEL', 'MODEL_INCOMPATIBLE'].includes(error?.code)) return 'INCOMPATIBLE';
     return 'UNVERIFIED';
   }
+  function validOpenRouterModelId(value) {
+    return typeof value === 'string' && value.length <= 200
+      && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,98}$/.test(value);
+  }
   async function withPending(control, action, progressText, form = control?.closest?.('form')) {
     if (!control || control.disabled || control.dataset.pending === 'true' || form?.dataset.pending === 'true') return false;
     const originalText = control.textContent;
@@ -1189,6 +1193,9 @@
     const desired = state.reviewerModelDraftDirty ? select.value : current.reviewerModel || '';
     const models = new Map((state.modelCatalog || []).filter((model) => typeof model?.id === 'string')
       .map((model) => [model.id, model]));
+    if (desired && !models.has(desired)) {
+      models.set(desired, { id: desired, name: desired, status: 'UNVERIFIED' });
+    }
     if (current.reviewerModel && !models.has(current.reviewerModel)) {
       models.set(current.reviewerModel, { id: current.reviewerModel, name: current.reviewerModel, status: 'UNVERIFIED' });
     }
@@ -1547,6 +1554,39 @@
       : 'Pilih model Reviewer sebelum verifikasi.');
     updateReviewerModelActions();
   });
+  $('#reviewer-model-use-manual').addEventListener('click', () => {
+    const input = $('#reviewer-model-manual');
+    const model = input.value.trim();
+    const select = $('#reviewer-model-select');
+    const current = state.integrations?.configuration || {};
+    hide('#reviewer-model-error');
+    if (!model) {
+      renderReviewerModelValidation('UNVERIFIED', 'Masukkan Model ID lalu pilih Gunakan ID manual.', 'warning');
+      input.focus();
+      return;
+    }
+    if (!validOpenRouterModelId(model)) {
+      renderReviewerModelValidation('INCOMPATIBLE', 'Format Model ID tidak valid. Gunakan namespace/model-id yang persis dari OpenRouter.', 'warning');
+      return;
+    }
+    if (model === current.model) {
+      renderReviewerModelValidation('INCOMPATIBLE', 'Model Reviewer harus berbeda dari model Generator.', 'warning');
+      return;
+    }
+    let option = [...select.options].find((candidate) => candidate.value === model);
+    if (!option) {
+      option = document.createElement('option');
+      option.value = model;
+      option.textContent = `${model} · ${model} · UNVERIFIED · ID manual`;
+      select.append(option);
+    }
+    option.disabled = false;
+    select.value = model;
+    state.reviewerModelDraftDirty = true;
+    state.reviewerModelValidation = null;
+    renderReviewerModelValidation('UNVERIFIED', 'Model ID manual dipilih. Verifikasi metadata OpenRouter sebelum menyimpan.');
+    updateReviewerModelActions();
+  });
   $('#reviewer-model-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1583,7 +1623,7 @@
   $('#reviewer-model-verify').addEventListener('click', async (event) => {
     const form = $('#reviewer-model-form'); const model = form.elements.model.value.trim();
     const current = state.integrations?.configuration || {};
-    if (!model) { renderReviewerModelValidation('UNVERIFIED', 'Pilih model Reviewer dari katalog terlebih dahulu.', 'warning'); return; }
+    if (!model) { renderReviewerModelValidation('UNVERIFIED', 'Pilih model Reviewer dari katalog atau masukkan ID manual terlebih dahulu.', 'warning'); return; }
     if (model === current.model) {
       renderReviewerModelValidation('INCOMPATIBLE', 'Model Reviewer harus berbeda dari model Generator.', 'warning');
       return;
@@ -1655,7 +1695,7 @@
     const model = $('#integration-model-manual').value.trim();
     hide('#integration-model-error');
     if (!model) { renderModelValidation('UNVERIFIED', 'Masukkan Model ID tanpa perubahan otomatis, lalu pilih Gunakan ID.', 'warning'); $('#integration-model-manual').focus(); return; }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,98}$/.test(model)) {
+    if (!validOpenRouterModelId(model)) {
       const error = Object.assign(new Error('INVALID_MODEL'), { code: 'INVALID_MODEL' });
       renderModelValidation('INCOMPATIBLE', 'Format Model ID tidak valid. Gunakan namespace/model-id yang persis dari OpenRouter.', 'error');
       error.fields = { modelSearch: 'INVALID_MODEL' };

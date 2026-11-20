@@ -238,7 +238,7 @@
           <div><p class="eyebrow">KONFIGURASI AI</p><h2 id="ai-title">Model OpenRouter</h2><p class="muted">Model aktif dipakai pada generasi berikutnya. Kunci API tetap disimpan di server.</p></div>
           <div id="ai-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
           <div id="ai-provider-holds" class="notice warning publication-holds" role="status" hidden></div>
-          <dl class="integration-summary"><div><dt>Model Generator aktif</dt><dd id="ai-active-model">Belum tersedia</dd><p id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</p></div><div><dt>Model Reviewer aktif</dt><dd id="ai-active-reviewer-model">Belum tersedia</dd><p id="ai-active-reviewer-model-status" class="field-hint">Reviewer wajib memakai model berbeda.</p></div></dl>
+          <dl class="integration-summary"><div><dt>Model Generator aktif</dt><dd id="ai-active-model">Belum tersedia</dd><dd id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</dd></div><div><dt>Model Reviewer aktif</dt><dd id="ai-active-reviewer-model">Belum tersedia</dd><dd id="ai-active-reviewer-model-status" class="field-hint">Reviewer wajib memakai model berbeda.</dd></div></dl>
           <div id="ai-dual-model-status" class="notice warning" role="status" aria-live="polite">Dua model berbeda diperlukan sebelum otomasi dapat diaktifkan.</div>
           <div class="form-actions"><button id="ai-refresh" type="button" class="button quiet">Muat ulang model</button></div>
         </section>
@@ -265,7 +265,13 @@
         </form>
         <form id="reviewer-model-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">AI REVIEWER</p><h2>Model Reviewer</h2><p class="muted">Reviewer wajib menggunakan model berbeda. Model ini hanya dipanggil saat caption gagal validasi deterministik dan dapat diperbaiki.</p></div></div>
-          <div class="field full"><label for="reviewer-model-select">Pilih Model Reviewer</label><select id="reviewer-model-select" name="model" required aria-describedby="reviewer-model-help reviewer-model-validation"><option value="">Muat katalog lalu pilih model</option></select><span id="reviewer-model-help" class="field-hint">Model Generator saat ini tidak dapat dipilih sebagai Reviewer.</span></div>
+          <div class="field full"><label for="reviewer-model-select">Pilih Model Reviewer</label><select id="reviewer-model-select" name="model" required aria-describedby="reviewer-model-help reviewer-model-validation"><option value="">Muat katalog atau masukkan ID manual</option></select><span id="reviewer-model-help" class="field-hint">Model Generator saat ini tidak dapat dipilih sebagai Reviewer.</span></div>
+          <details id="reviewer-model-manual-panel" class="model-manual-option full">
+            <summary>Opsi lanjutan: masukkan Model ID Reviewer manual</summary>
+            <label for="reviewer-model-manual">Model ID Reviewer dari OpenRouter</label>
+            <div class="model-manual-row"><input id="reviewer-model-manual" type="text" maxlength="200" autocomplete="off" aria-describedby="reviewer-model-manual-hint" placeholder="namespace/model-id"><button id="reviewer-model-use-manual" class="button quiet" type="button">Gunakan ID manual</button></div>
+            <span id="reviewer-model-manual-hint" class="field-hint">ID manual tetap harus berbeda dari Generator dan diverifikasi lewat metadata OpenRouter sebelum dapat disimpan.</span>
+          </details>
           <div id="reviewer-model-error" class="notice error full" role="alert" hidden></div>
           <div id="reviewer-model-validation" class="notice info full" role="status" aria-live="polite">Model Reviewer belum diverifikasi.</div>
           <div class="form-footer full"><button class="button quiet" id="reviewer-model-verify" type="button" disabled>Verifikasi Model Reviewer</button><button class="button primary" type="submit" disabled>Simpan Model Reviewer</button></div>
